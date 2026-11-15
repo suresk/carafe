@@ -98,13 +98,5 @@ fn switches() {
     let switches = class("Switches", "Switches");
     let days: Vec<i32> = (1..=12).map(|m| call(&switches, "days", &[m]).0).collect();
     assert_eq!(days, [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]);
-
-    let mut vm = Vm::new();
-    let error =
-        vm.invoke(&switches, "size", "(I)Ljava/lang/String;", &[Value::Int(10)]);
-    assert_eq!(
-        error.unwrap_err().to_string(),
-        "carafe cannot run this yet: ldc of String { utf8: 10 }"
-    );
     // @end
 }

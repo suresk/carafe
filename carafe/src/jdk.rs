@@ -98,3 +98,18 @@ impl Jdk {
     }
     // @end
 }
+
+impl Jdk {
+    // @listing jdk-java-with
+    /// As `java`, with `options` for the JVM before the class name.
+    pub fn java_with(
+        &self,
+        options: &[&str],
+        classes: &Path,
+        class: &str,
+    ) -> Result<String> {
+        let mut java = Command::new(self.home.join("bin").join("java"));
+        self.run(java.args(options).arg("-cp").arg(classes).arg(class))
+    }
+    // @end
+}

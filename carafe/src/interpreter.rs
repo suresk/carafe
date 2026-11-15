@@ -7,10 +7,13 @@ use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::{Heap, Ref};
+use crate::loader::{ClassPath, linkage};
 use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
+use crate::resolve::{dotted, external};
 use crate::value::Value;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 // @listing vm
@@ -27,6 +30,14 @@ pub struct Vm {
     pub deepest: usize,
     /// Every object the program has created.
     pub heap: Heap,
+    /// Where `load` finds classes.
+    pub class_path: ClassPath,
+    /// The classes loaded so far, by name.
+    pub(crate) classes: HashMap<String, Rc<Class>>,
+    /// The names of the classes loaded so far, in the order loading ended.
+    pub loaded: Vec<String>,
+    /// The classes whose loading has started and not ended.
+    pub(crate) loading: Vec<String>,
     // @show
 }
 
@@ -59,6 +70,10 @@ impl Vm {
                 "calling {name}, which isn't static"
             )));
         }
+        // @hide
+        let name = class.file.this_class.clone();
+        self.classes.entry(name).or_insert_with(|| class.clone());
+        // @show
         let depth = self.frames.len();
         self.frames.push(Frame::new(class.clone(), method, args)?);
         let result = self.run(depth);
@@ -312,23 +327,19 @@ pub const MAX_FRAMES: usize = 10_000;
 
 impl Vm {
     // @listing invoke-static
-    /// `invokestatic`: pops the arguments from the caller's operand stack and
-    /// pushes a frame for the method, which runs next.
+    /// `invokestatic`: resolves the method, pops the arguments from the
+    /// caller's operand stack and pushes a frame for the method, which runs next.
     fn invoke_static(&mut self, index: u16) -> Result<Flow> {
-        let caller = self.frames.last_mut().expect("invokestatic has a caller");
-        let class = caller.class.clone();
-        let target = class.file.constant_pool.member(index)?;
-        if target.class != class.file.this_class {
-            let m = format!("invokestatic of {}.{}", target.class, target.name);
-            return Err(Error::Unsupported(m));
-        }
-        let method = class.method(target.name, target.descriptor)?;
+        let from =
+            self.frames.last().expect("invokestatic has a caller").class.clone();
+        let (class, method) = self.resolve_method(&from, index)?;
         let callee = &class.file.methods[method];
         if !callee.access_flags.has(AccessFlags::STATIC) {
-            let m = format!("expected {}.{} to be static", target.class, target.name);
-            let class = "java/lang/IncompatibleClassChangeError";
-            return Err(Error::Exception { class, message: Some(m) });
+            let name = external(&class.file.this_class, &callee.name, &callee.ty);
+            let m = format!("Expected static method '{name}'");
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
+        let caller = self.frames.last_mut().expect("invokestatic has a caller");
         let args = caller.pop_args(callee.arg_slots())?;
         let frame = Frame::new(class.clone(), method, &args)?;
         self.call(frame)?;
@@ -368,54 +379,60 @@ fn narrow_return(frame: &mut Frame) -> Result<Value> {
 
 impl Vm {
     // @listing object-op
-    /// `new`, `getfield` and `putfield`, for the current class's objects.
+    /// `new`, `getfield` and `putfield`.
     fn object_op(&mut self, opcode: u8, index: u16) -> Result<()> {
-        let frame = self.frames.last_mut().expect("a frame");
-        let class = frame.class.clone();
-        let pool = &class.file.constant_pool;
+        let from = self.frames.last().expect("a frame").class.clone();
         if opcode == NEW {
-            let name = pool.class_name(index)?;
-            if name != class.file.this_class {
-                return Err(Error::Unsupported(format!("new {name}")));
+            let name = from.file.constant_pool.class_name(index)?;
+            let class = self.resolve_class(&from, name)?;
+            let flags = class.file.access_flags;
+            if flags.has(AccessFlags::ABSTRACT | AccessFlags::INTERFACE) {
+                return Err(linkage("java/lang/InstantiationError", dotted(name)));
             }
-            return frame.push(Value::Ref(self.heap.new_object(&class)));
+            let object = self.heap.new_object(&class);
+            return self.frames.last_mut().expect("a frame").push(Value::Ref(object));
         }
-        let target = pool.member(index)?;
-        if target.class != class.file.this_class {
-            let m = format!("the field {}.{}", target.class, target.name);
-            return Err(Error::Unsupported(m));
+        let (owner, field) = self.resolve_field(&from, index)?;
+        if field.access_flags.has(AccessFlags::STATIC) {
+            let m = format!(
+                "Expected non-static field {}.{}",
+                dotted(&owner.file.this_class),
+                field.name
+            );
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
-        let field = class.field(target.name, target.descriptor)?;
+        let slot = owner.field(&field.name, &field.descriptor)?;
+        let frame = self.frames.last_mut().expect("a frame");
         if opcode == GETFIELD {
             let object = non_null(frame.pop_ref()?)?;
-            frame.push(self.heap.read(object.0 + field.offset, &field.ty))
+            frame.push(self.heap.read(object.0 + slot.offset, &slot.ty))
         } else {
             let value = frame.pop()?;
             let object = non_null(frame.pop_ref()?)?;
-            self.heap.write(object.0 + field.offset, &field.ty, value)
+            self.heap.write(object.0 + slot.offset, &slot.ty, value)
         }
     }
     // @end
 
     // @listing invoke-special
-    /// `invokespecial`, for now only of a constructor of the current class
-    /// or of `Object`.
+    /// `invokespecial`, for now only of a constructor.
     fn invoke_special(&mut self, index: u16) -> Result<Flow> {
-        let caller = self.frames.last_mut().expect("a caller");
-        let class = caller.class.clone();
-        let target = class.file.constant_pool.member(index)?;
-        if (target.class, target.name, target.descriptor)
-            == ("java/lang/Object", "<init>", "()V")
-        {
-            // Object's constructor is empty; Chapter 10 runs the real one.
+        let from = self.frames.last().expect("a caller").class.clone();
+        let target = from.file.constant_pool.member(index)?;
+        let object_init =
+            (target.class, target.name) == ("java/lang/Object", "<init>");
+        if object_init && from.superclass.is_none() {
+            // Object is a stand-in until Chapter 10, and its constructor is empty.
+            let caller = self.frames.last_mut().expect("a caller");
             non_null(caller.pop_ref()?)?;
             return Ok(Flow::Next);
         }
-        if target.class != class.file.this_class || target.name != "<init>" {
+        if target.name != "<init>" {
             let m = format!("invokespecial of {}.{}", target.class, target.name);
             return Err(Error::Unsupported(m));
         }
-        let method = class.method(target.name, target.descriptor)?;
+        let (class, method) = self.resolve_method(&from, index)?;
+        let caller = self.frames.last_mut().expect("a caller");
         let args = caller.pop_args(class.file.methods[method].arg_slots())?;
         let Some(&Value::Ref(this)) = args.first() else {
             return Err(Error::Verify(format!("{} without an object", target.name)));

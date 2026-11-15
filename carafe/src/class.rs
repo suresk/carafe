@@ -18,6 +18,11 @@ pub struct Class {
     // @hide
     /// Where the instance fields are in an object of this class.
     pub layout: Layout,
+    /// The superclass, or `None` for `Object` (and, until Chapter 10, for the
+    /// classes that extend it).
+    pub superclass: Option<Rc<Class>>,
+    /// The direct superinterfaces.
+    pub interfaces: Vec<Rc<Class>>,
     // @show
 }
 
@@ -32,6 +37,8 @@ impl Class {
             code,
             // @hide
             layout,
+            superclass: None,
+            interfaces: Vec::new(),
             // @show
         }
     }
@@ -106,6 +113,19 @@ impl Layout {
     }
 }
 // @end
+
+impl Class {
+    // @listing extending
+    /// A class whose superclass is `superclass`, with its fields laid out
+    /// after the superclass's.
+    pub fn extending(file: ClassFile, superclass: Rc<Class>) -> Class {
+        let mut class = Class::new(file);
+        class.layout = Layout::new(&class.file, &superclass.layout);
+        class.superclass = Some(superclass);
+        class
+    }
+    // @end
+}
 
 impl Class {
     // @listing class-field

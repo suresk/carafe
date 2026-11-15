@@ -85,16 +85,3 @@ fn ireturn_narrows() {
     assert_eq!(low(&mut vm, 255).unwrap(), Some(Value::Int(-1)));
     // @end
 }
-
-#[test]
-fn other_classes_must_wait() {
-    // @listing other-class-test
-    let calls = class(&calls_bytes());
-    let error =
-        Vm::new().invoke(&calls, "abs", "(I)I", &[Value::Int(-3)]).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "carafe cannot run this yet: invokestatic of java/lang/Math.abs"
-    );
-    // @end
-}
