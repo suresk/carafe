@@ -61,7 +61,8 @@ fn class_objects() {
         vm.class_of_mirror(component).unwrap().file.this_class,
         "[Ljava/lang/String;"
     );
-    assert_eq!(read(&vm, mirror, "modifiers", "C"), Value::Int(0x0411)); // public final abstract
+    let modifiers = read(&vm, mirror, "modifiers", "C");
+    assert_eq!(modifiers, Value::Int(0x0411)); // public final abstract
     // @end
 }
 
