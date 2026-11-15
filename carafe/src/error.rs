@@ -15,6 +15,15 @@ pub enum Error {
     UnsupportedVersion(String),
     /// The JDK is missing, is not the pinned release, or a tool in it failed.
     Jdk(String),
+    // @hide
+    /// Code broke a rule that the JVM's verifier enforces: `VerifyError`.
+    Verify(String),
+    /// A Java exception or error that the VM throws, such as
+    /// `java/lang/ArithmeticException`, until Chapter 16 makes it an object.
+    Exception { class: &'static str, message: Option<String> },
+    /// Something carafe does not implement yet.
+    Unsupported(String),
+    // @show
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -30,6 +39,17 @@ impl fmt::Display for Error {
                 write!(f, "UnsupportedClassVersionError: {m}")
             }
             Error::Jdk(m) => write!(f, "JDK: {m}"),
+            // @hide
+            Error::Verify(m) => write!(f, "VerifyError: {m}"),
+            Error::Exception { class, message } => {
+                write!(f, "{}", class.replace('/', "."))?;
+                match message {
+                    Some(m) => write!(f, ": {m}"),
+                    None => Ok(()),
+                }
+            }
+            Error::Unsupported(m) => write!(f, "carafe cannot run this yet: {m}"),
+            // @show
         }
     }
 }
