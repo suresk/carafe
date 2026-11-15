@@ -2,6 +2,7 @@
 
 use crate::bytecode::{Instruction, Operand};
 use crate::class::Class;
+use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
@@ -17,6 +18,12 @@ use std::rc::Rc;
 pub struct Vm {
     frames: Vec<Frame>,
     pub executed: u64,
+    // @hide
+    /// The number of calls made by `invoke` instructions.
+    pub calls: u64,
+    /// The most frames that were ever on the stack at once.
+    pub deepest: usize,
+    // @show
 }
 
 /// What happens after an instruction.
@@ -143,6 +150,11 @@ impl Vm {
                 let a = frame.pop_int()?;
                 frame.push(Value::Int(a.wrapping_neg()))?;
             }
+            // @hide
+            (INVOKESTATIC, &Operand::Constant(index)) => {
+                return self.invoke_static(index);
+            }
+            // @show
             _ => return branch(frame, i),
         }
         Ok(Flow::Next)
@@ -177,6 +189,9 @@ fn branch(frame: &mut Frame, i: &Instruction) -> Result<Flow> {
                 Err(_) => Flow::Jump(*default),
             }
         }
+        // @hide
+        (IRETURN, _) => Flow::Return(Some(narrow_return(frame)?)),
+        // @show
         (IRETURN..=ARETURN, _) => Flow::Return(Some(frame.pop()?)),
         (RETURN, _) => Flow::Return(None),
         _ => {
@@ -263,5 +278,74 @@ fn constant(class: &Class, index: u16) -> Result<Value> {
         Constant::Double(v) => Value::Double(*v),
         other => return Err(Error::Unsupported(format!("ldc of {other:?}"))),
     })
+}
+// @end
+
+// @listing max-frames
+/// The most frames carafe allows on the stack before it throws
+/// `StackOverflowError`.
+pub const MAX_FRAMES: usize = 10_000;
+// @end
+
+impl Vm {
+    // @listing invoke-static
+    /// `invokestatic`: pops the arguments from the caller's operand stack and
+    /// pushes a frame for the method, which runs next.
+    fn invoke_static(&mut self, index: u16) -> Result<Flow> {
+        let caller = self.frames.last_mut().expect("invokestatic has a caller");
+        let class = caller.class.clone();
+        let target = class.file.constant_pool.member(index)?;
+        if target.class != class.file.this_class {
+            let m = format!("invokestatic of {}.{}", target.class, target.name);
+            return Err(Error::Unsupported(m));
+        }
+        let method = class.method(target.name, target.descriptor)?;
+        let callee = &class.file.methods[method];
+        if !callee.access_flags.has(AccessFlags::STATIC) {
+            let m = format!("expected {}.{} to be static", target.class, target.name);
+            let class = "java/lang/IncompatibleClassChangeError";
+            return Err(Error::Exception { class, message: Some(m) });
+        }
+        let mut args = Vec::new();
+        let mut slots = 0;
+        while slots < callee.arg_slots() {
+            let arg = caller.pop()?;
+            slots += if arg.is_wide() { 2 } else { 1 };
+            args.push(arg);
+        }
+        args.reverse();
+        let frame = Frame::new(class.clone(), method, &args)?;
+        self.call(frame)?;
+        Ok(Flow::Next)
+    }
+
+    /// Pushes a new frame, unless the stack is full.
+    fn call(&mut self, frame: Frame) -> Result<()> {
+        if self.frames.len() == MAX_FRAMES {
+            let class = "java/lang/StackOverflowError";
+            return Err(Error::Exception { class, message: None });
+        }
+        self.frames.push(frame);
+        self.calls += 1;
+        self.deepest = self.deepest.max(self.frames.len());
+        Ok(())
+    }
+    // @end
+}
+
+// @listing narrow-return
+/// The value `ireturn` returns, narrowed to the method's return type: a
+/// `byte`, `short` or `char` is truncated and sign- or zero-extended, and a
+/// `boolean` keeps its lowest bit (JVMS 6.5.ireturn).
+fn narrow_return(frame: &mut Frame) -> Result<Value> {
+    let v = frame.pop_int()?;
+    let ty = &frame.class.file.methods[frame.method].ty.ret;
+    Ok(Value::Int(match ty {
+        Some(FieldType::Boolean) => v & 1,
+        Some(FieldType::Byte) => v as i8 as i32,
+        Some(FieldType::Char) => v as u16 as i32,
+        Some(FieldType::Short) => v as i16 as i32,
+        _ => v,
+    }))
 }
 // @end

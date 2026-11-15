@@ -27,7 +27,7 @@ pub use descriptor::{FieldType, MethodDescriptor};
 pub use error::{Error, Result};
 pub use flags::{AccessFlags, Flagged};
 pub use frame::Frame;
-pub use interpreter::Vm;
+pub use interpreter::{MAX_FRAMES, Vm};
 pub use jdk::{JDK_VERSION, Jdk};
 pub use member::{Field, Method};
 pub use pool::{Constant, ConstantPool, MemberRef};
@@ -41,3 +41,4 @@ pub use challenges::ch01::{
 pub use challenges::ch02::{check_flags, declaration, line_number};
 pub use challenges::ch03::{encode_bytecode, exception_table, unreachable};
 pub use challenges::ch04::{call_checked, max_stack};
+pub use challenges::ch05::{call_graph, recursive};
