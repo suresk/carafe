@@ -93,7 +93,7 @@ impl Vm {
 
 // @listing array-helpers
 /// An array length from the operand stack, which must not be negative.
-fn length(count: i32) -> Result<u32> {
+pub(crate) fn length(count: i32) -> Result<u32> {
     u32::try_from(count).map_err(|_| Error::Exception {
         class: "java/lang/NegativeArraySizeException",
         message: Some(count.to_string()),

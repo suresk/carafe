@@ -5,6 +5,7 @@ use crate::casts::is_subtype;
 use crate::class::Class;
 use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
+use crate::exceptions::TraceFrame;
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::{Heap, Ref};
@@ -57,6 +58,11 @@ pub struct Vm {
     pub(crate) primitive_mirrors: BTreeMap<String, Ref>,
     /// The class each mirror stands for, by the mirror's reference.
     pub(crate) mirror_classes: HashMap<Ref, Rc<Class>>,
+    /// Extra frames allowed while the VM constructs an exception, so that a
+    /// `StackOverflowError` can be created at the limit.
+    pub(crate) headroom: usize,
+    /// Each exception's stack trace, recorded by `fillInStackTrace`.
+    pub(crate) backtraces: HashMap<Ref, Vec<TraceFrame>>,
     // @show
 }
 
@@ -105,7 +111,8 @@ impl Vm {
 
 impl Vm {
     // @listing run
-    /// Executes instructions until the frame at `depth` returns.
+    /// Executes instructions until the frame at `depth` returns. An error is
+    /// caught by a handler in one of the frames, or leaves `run` as `Thrown`.
     pub(crate) fn run(&mut self, depth: usize) -> Result<Option<Value>> {
         loop {
             let frame = self.frames.last_mut().expect("run has a frame");
@@ -118,7 +125,14 @@ impl Vm {
             };
             frame.next += 1;
             self.executed += 1;
-            match self.execute(instruction)? {
+            let flow = match self.execute(instruction) {
+                Ok(flow) => flow,
+                Err(error) => {
+                    self.catch(error, depth)?;
+                    continue;
+                }
+            };
+            match flow {
                 Flow::Next => {}
                 Flow::Jump(pc) => {
                     let frame = self.frames.last_mut().expect("run has a frame");
@@ -213,6 +227,10 @@ impl Vm {
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
             (NEWARRAY | ANEWARRAY | MULTIANEWARRAY | ARRAYLENGTH, _)
             | (IALOAD..=SALOAD | IASTORE..=SASTORE, _) => self.array_op(i)?,
+            (ATHROW, _) => {
+                let exception = non_null(frame.pop_ref()?)?;
+                return Err(self.thrown(exception)?);
+            }
             (MONITORENTER | MONITOREXIT, _) => {
                 // One thread: every monitor is free to enter (JVM4 adds threads).
                 non_null(frame.pop_ref()?)?;
@@ -400,10 +418,13 @@ impl Vm {
         self.call(frame)?;
         Ok(Flow::Next)
     }
+    // @end
 
-    /// Pushes a new frame, unless the stack is full.
+    // @listing call
+    /// Pushes a new frame, unless the stack is full. While the VM constructs
+    /// an exception, the stack may go `headroom` frames past the limit.
     pub(crate) fn call(&mut self, frame: Frame) -> Result<()> {
-        if self.frames.len() == MAX_FRAMES {
+        if self.frames.len() >= MAX_FRAMES + self.headroom {
             let class = "java/lang/StackOverflowError";
             return Err(Error::Exception { class, message: None });
         }

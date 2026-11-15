@@ -1,7 +1,7 @@
 //! Starting a VM on the JDK's class library, and running a program.
 
 use crate::descriptor::FieldType;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::interpreter::Vm;
 use crate::jdk::Jdk;
 use crate::loader::ClassPath;
@@ -39,8 +39,19 @@ impl Vm {
         let class = self.load(class)?;
         let string = FieldType::Object("java/lang/String".to_string());
         let args = self.heap.new_array(&string, 0)?;
-        self.invoke(&class, "main", "([Ljava/lang/String;)V", &[Value::Ref(args)])?;
-        Ok(())
+        let result = self.invoke(
+            &class,
+            "main",
+            "([Ljava/lang/String;)V",
+            &[Value::Ref(args)],
+        );
+        // @hide
+        if let Err(Error::Thrown { exception, .. }) = &result {
+            let report = self.report(*exception)?;
+            self.stderr.extend_from_slice(report.as_bytes());
+        }
+        // @show
+        result.map(|_| ())
     }
     // @end
 }

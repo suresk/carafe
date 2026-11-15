@@ -2,6 +2,7 @@
 
 use crate::arrays;
 use crate::error::Result;
+use crate::exceptions;
 use crate::frame::Frame;
 use crate::interpreter::Vm;
 use crate::lang;
@@ -68,7 +69,13 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
             |_, _| Ok(Some(Value::Long(0)))
         }
         "java/lang/Throwable.fillInStackTrace(I)Ljava/lang/Throwable;" => {
-            |_, args| Ok(Some(args[0]))
+            exceptions::fill_in_stack_trace
+        }
+        "java/lang/reflect/Array.newArray(Ljava/lang/Class;I)Ljava/lang/Object;" => {
+            mirror::new_array
+        }
+        "java/lang/NullPointerException.getExtendedNPEMessage()Ljava/lang/String;" => {
+            |_, _| Ok(Some(Value::Ref(crate::heap::Ref::NULL)))
         }
         // @show
         _ => return None,

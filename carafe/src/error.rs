@@ -1,5 +1,6 @@
 //! One error type for the whole crate.
 
+use crate::heap::Ref;
 use std::fmt;
 use std::io;
 
@@ -23,6 +24,9 @@ pub enum Error {
     Exception { class: &'static str, message: Option<String> },
     /// Something carafe does not implement yet.
     Unsupported(String),
+    /// A Java exception object that no handler caught: its class, as
+    /// `java/lang/IllegalStateException`, and its message.
+    Thrown { exception: Ref, class: String, message: Option<String> },
     // @show
 }
 
@@ -42,6 +46,13 @@ impl fmt::Display for Error {
             // @hide
             Error::Verify(m) => write!(f, "VerifyError: {m}"),
             Error::Exception { class, message } => {
+                write!(f, "{}", class.replace('/', "."))?;
+                match message {
+                    Some(m) => write!(f, ": {m}"),
+                    None => Ok(()),
+                }
+            }
+            Error::Thrown { class, message, .. } => {
                 write!(f, "{}", class.replace('/', "."))?;
                 match message {
                     Some(m) => write!(f, ": {m}"),

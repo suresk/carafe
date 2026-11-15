@@ -181,3 +181,22 @@ fn java_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 // @end
+
+impl Jdk {
+    // @listing jdk-java-stderr
+    /// As `java_with`, for a program that may fail: what it printed to
+    /// standard output and to standard error.
+    pub fn java_both(
+        &self,
+        options: &[&str],
+        classes: &Path,
+        class: &str,
+    ) -> Result<(String, String)> {
+        let mut java = Command::new(self.home.join("bin").join("java"));
+        let output =
+            java.args(options).arg("-cp").arg(classes).arg(class).output()?;
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        Ok((text(&output.stdout), text(&output.stderr)))
+    }
+    // @end
+}

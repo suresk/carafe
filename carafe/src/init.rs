@@ -34,6 +34,9 @@ impl Vm {
             Ok(()) => State::Initialized,
             Err(_) => State::Erroneous,
         });
+        // @hide
+        let result = result.map_err(|e| self.in_initializer(e));
+        // @show
         result.map_err(|e| match e {
             // A Java exception that isn't an Error is wrapped (JVMS 5.5,
             // step 11). Until Chapter 16, an Error is any class whose name

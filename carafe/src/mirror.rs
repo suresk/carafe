@@ -239,3 +239,32 @@ pub(crate) fn get_superclass(vm: &mut Vm, args: &[Value]) -> Result<Option<Value
     Ok(Some(Value::Ref(superclass)))
 }
 // @end
+
+// @listing new-array
+/// `Array.newArray(Class, int)`: a new array with elements of the mirror's
+/// type, which is how `Arrays.copyOf` makes an array of the same class.
+pub(crate) fn new_array(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(mirror), Value::Int(count)] = *args else { unreachable!() };
+    let mirror = crate::interpreter::non_null(mirror)?;
+    let element = match vm.mirror_classes.get(&mirror) {
+        Some(class) if class.file.this_class.starts_with('[') => {
+            FieldType::parse(&class.file.this_class)?
+        }
+        Some(class) => FieldType::Object(class.file.this_class.clone()),
+        None => {
+            let primitives =
+                "ZBCSIJFD".chars().map(|c| FieldType::parse(&c.to_string()));
+            let mut primitives = primitives.collect::<Result<Vec<_>>>()?.into_iter();
+            let name = vm.primitive_mirrors.iter().find(|&(_, &m)| m == mirror);
+            let name = name.map(|(name, _)| name.clone()).expect("a mirror");
+            let Some(t) = primitives.find(|t| t.to_string() == name) else {
+                let class = "java/lang/IllegalArgumentException";
+                return Err(Error::Exception { class, message: None }); // void
+            };
+            t
+        }
+    };
+    let array = vm.heap.new_array(&element, crate::arrays::length(count)?)?;
+    Ok(Some(Value::Ref(array)))
+}
+// @end

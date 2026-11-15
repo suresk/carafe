@@ -88,6 +88,10 @@ fn run(dir: &str, class: &str) -> ExitCode {
     std::io::stderr().write_all(&vm.stderr).expect("stderr");
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // @hide
+        // The report is in vm.stderr, written above.
+        Err(carafe::Error::Thrown { .. }) => ExitCode::FAILURE,
+        // @show
         Err(e) => {
             eprintln!("Exception in thread \"main\" {e}");
             ExitCode::FAILURE
