@@ -87,6 +87,7 @@ pub use challenges::ch20::{modifier_string, signature_classes};
 pub use challenges::ch21::{lambda_callers, packages};
 pub use challenges::ch22::thread_summary;
 pub use challenges::ch23::{cache_census, histogram};
+pub use challenges::ch24::{natives_by_class, startup_classes};
 pub use dynamic::{Bootstrap, CallSite, Piece, bootstrap_methods};
 pub use exceptions::TraceFrame;
 pub use records::RecordMethod;

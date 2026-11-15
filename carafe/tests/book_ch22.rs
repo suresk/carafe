@@ -23,7 +23,7 @@ fn both_with(program: &str, input: &str) -> (Vm, String, String) {
     vm.stdin = input.as_bytes().to_vec();
     vm.run_main(program).unwrap();
     let ours = String::from_utf8(vm.stdout.clone()).unwrap();
-    let theirs = jdk.java_input(&app, program, input.as_bytes()).unwrap();
+    let theirs = jdk.java_input(&[], &app, program, input.as_bytes()).unwrap();
     (vm, ours, theirs)
 }
 // @end

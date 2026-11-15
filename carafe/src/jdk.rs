@@ -203,9 +203,10 @@ impl Jdk {
 
 impl Jdk {
     // @listing jdk-java-input
-    /// As `java`, with `input` as the program's standard input.
+    /// As `java_with`, with `input` as the program's standard input.
     pub fn java_input(
         &self,
+        options: &[&str],
         classes: &Path,
         class: &str,
         input: &[u8],
@@ -213,7 +214,7 @@ impl Jdk {
         use std::io::Write;
         use std::process::Stdio;
         let mut java = Command::new(self.home.join("bin").join("java"));
-        let java = java.arg("-cp").arg(classes).arg(class);
+        let java = java.args(options).arg("-cp").arg(classes).arg(class);
         let mut child = java.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         child.stdin.take().expect("piped").write_all(input)?;
         let output = child.wait_with_output()?;

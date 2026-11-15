@@ -365,13 +365,18 @@ fn write_package(
     };
     write_if_changed(&scratch.join("Cargo.toml"), &manifest)?;
     write_if_changed(&scratch.join("src/lib.rs"), "")?;
-    // The Java programs that tests compile, from `CARGO_MANIFEST_DIR/java`.
-    fs::create_dir_all(scratch.join("java"))?;
-    for entry in fs::read_dir(Path::new(ROOT).join("carafe/java"))?.flatten() {
-        let copy = scratch.join("java").join(entry.file_name());
-        let contents = fs::read(entry.path())?;
-        if fs::read(&copy).ok().as_ref() != Some(&contents) {
-            fs::write(&copy, contents)?;
+    // The Java programs that tests compile, from `CARGO_MANIFEST_DIR/java`,
+    // and the measurement corpus, from `CARGO_MANIFEST_DIR/corpus`.
+    for sources in ["java", "corpus"] {
+        fs::create_dir_all(scratch.join(sources))?;
+        for entry in
+            fs::read_dir(Path::new(ROOT).join("carafe").join(sources))?.flatten()
+        {
+            let copy = scratch.join(sources).join(entry.file_name());
+            let contents = fs::read(entry.path())?;
+            if fs::read(&copy).ok().as_ref() != Some(&contents) {
+                fs::write(&copy, contents)?;
+            }
         }
     }
     for target in targets {

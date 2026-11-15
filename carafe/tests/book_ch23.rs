@@ -21,7 +21,7 @@ fn the_benchmarks() {
     let mut vm = Vm::boot(&jdk, &work, &app).unwrap();
     vm.run_main("Bench").unwrap(); // no input: each benchmark, small
     let ours = String::from_utf8(vm.stdout.clone()).unwrap();
-    assert_eq!(ours, jdk.java_input(&app, "Bench", b"").unwrap());
+    assert_eq!(ours, jdk.java_input(&[], &app, "Bench", b"").unwrap());
     let bench = vm.load("Bench").unwrap();
     let count = bench.file.constant_pool.count();
     let cached: Vec<&Resolved> = (1..count).filter_map(|i| bench.cached(i)).collect();
