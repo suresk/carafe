@@ -227,6 +227,9 @@ impl Vm {
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
             (NEWARRAY | ANEWARRAY | MULTIANEWARRAY | ARRAYLENGTH, _)
             | (IALOAD..=SALOAD | IASTORE..=SASTORE, _) => self.array_op(i)?,
+            (INVOKEDYNAMIC, &Operand::Dynamic(index)) => {
+                self.invoke_dynamic(index, i.pc)?
+            }
             (ATHROW, _) => {
                 let exception = non_null(frame.pop_ref()?)?;
                 return Err(self.thrown(exception)?);

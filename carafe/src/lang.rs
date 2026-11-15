@@ -62,3 +62,18 @@ pub(crate) fn zero(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
     Ok(Some(Value::Int(0)))
 }
 // @end
+
+// @listing clocks
+/// `System.nanoTime()`: carafe's clock counts instructions executed, so a
+/// program that seeds something with the time does the same on every run.
+pub(crate) fn nano_time(vm: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
+    Ok(Some(Value::Long(vm.executed as i64)))
+}
+
+/// `System.currentTimeMillis()`: the time of day, which can't be the same
+/// on every run, in milliseconds since 1970.
+pub(crate) fn current_time_millis(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    Ok(Some(Value::Long(now.map_or(0, |d| d.as_millis() as i64))))
+}
+// @end

@@ -67,6 +67,10 @@ public final class System {
                                         int length);
 
     public static native int identityHashCode(Object x);
+
+    public static native long nanoTime();
+
+    public static native long currentTimeMillis();
     // @show
 }
 // @end

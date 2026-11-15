@@ -3,11 +3,13 @@
 use crate::bytecode::Instruction;
 use crate::class_file::ClassFile;
 use crate::descriptor::FieldType;
+use crate::dynamic::CallSite;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::heap::{HEADER, Ref, size_of};
 use crate::value::Value;
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 // @listing class
@@ -33,6 +35,8 @@ pub struct Class {
     /// Whether the class came from the boot class path: `java.base` and the
     /// shims, as opposed to the program's own classes.
     pub boot: bool,
+    /// The linked `invokedynamic` call sites, by method index and pc.
+    pub call_sites: RefCell<HashMap<(usize, u16), Rc<CallSite>>>,
     // @show
 }
 
@@ -56,6 +60,7 @@ impl Class {
             statics: RefCell::new(statics),
             mirror: Cell::new(Ref::NULL),
             boot: false,
+            call_sites: RefCell::new(HashMap::new()),
             // @show
         }
     }

@@ -71,6 +71,8 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/Throwable.fillInStackTrace(I)Ljava/lang/Throwable;" => {
             exceptions::fill_in_stack_trace
         }
+        "java/lang/System.nanoTime()J" => lang::nano_time,
+        "java/lang/System.currentTimeMillis()J" => lang::current_time_millis,
         "java/lang/reflect/Array.newArray(Ljava/lang/Class;I)Ljava/lang/Object;" => {
             mirror::new_array
         }
