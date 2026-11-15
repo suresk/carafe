@@ -4,6 +4,7 @@ mod arrays;
 mod attribute;
 mod boot;
 mod bytecode;
+mod cache;
 mod casts;
 mod challenges;
 mod class;
@@ -60,6 +61,7 @@ pub use strings::{LATIN1, UTF16};
 pub use utf8::decode_modified_utf8;
 pub use value::Value;
 
+pub use cache::Resolved;
 pub use challenges::ch01::{
     check_pool, encode_modified_utf8, tag_counts, write_pool,
 };
@@ -84,6 +86,7 @@ pub use challenges::ch19::{enum_switch, record_components};
 pub use challenges::ch20::{modifier_string, signature_classes};
 pub use challenges::ch21::{lambda_callers, packages};
 pub use challenges::ch22::thread_summary;
+pub use challenges::ch23::{cache_census, histogram};
 pub use dynamic::{Bootstrap, CallSite, Piece, bootstrap_methods};
 pub use exceptions::TraceFrame;
 pub use records::RecordMethod;

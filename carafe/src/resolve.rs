@@ -1,6 +1,7 @@
 //! Resolving symbolic references to classes, fields and methods
 //! (JVMS 5.4.3), with the access checks of JVMS 5.4.4.
 
+use crate::cache::Resolved;
 use crate::casts::is_subtype;
 use crate::class::Class;
 use crate::descriptor::{FieldType, MethodDescriptor};
@@ -66,6 +67,9 @@ impl Vm {
         index: u16,
     ) -> Result<(Rc<Class>, usize)> {
         // @hide
+        if let Some(Resolved::Method(class, method)) = from.cached(index) {
+            return Ok((class.clone(), *method));
+        }
         let constant = from.file.constant_pool.get(index)?;
         if let Constant::InterfaceMethodref { .. } = constant {
             return self.resolve_interface_method(from, index);
@@ -89,6 +93,9 @@ impl Vm {
         };
         let flags = owner.file.methods[method].access_flags;
         check_access(from, &owner, flags, "method", target.name)?;
+        // @hide
+        from.cache(index, Resolved::Method(owner.clone(), method));
+        // @show
         Ok((owner, method))
     }
     // @end
@@ -277,6 +284,7 @@ impl Vm {
         };
         let flags = owner.file.methods[method].access_flags;
         check_access(from, &owner, flags, "method", name)?;
+        from.cache(index, Resolved::Method(owner.clone(), method));
         Ok((owner, method))
     }
     // @end

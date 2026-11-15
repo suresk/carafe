@@ -99,12 +99,22 @@ const GROUP_INIT: &str = "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V";
 
 // @listing read-stdin
 /// `System.In.read0(byte[], int, int)`, in carafe's shim: copies the next
-/// bytes of standard input into the array, as many as there are up to
-/// `len`, and returns how many, or -1 when there are none left.
+/// bytes of standard input into the array, up to `len` of them, and returns
+/// how many, or -1 at the end. When the bytes that have arrived run out, it
+/// reads more from the source, as many as one read gives, which from a
+/// terminal is a line.
 pub(crate) fn read_stdin(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let [Value::Ref(array), Value::Int(off), Value::Int(len)] = *args else {
         unreachable!()
     };
+    if vm.stdin_read >= vm.stdin.len() {
+        let mut more = vec![0; len as usize];
+        let count = match &mut vm.stdin_source {
+            Some(source) => source.read(&mut more)?,
+            None => 0,
+        };
+        vm.stdin.extend_from_slice(&more[..count]);
+    }
     let left = &vm.stdin[vm.stdin_read.min(vm.stdin.len())..];
     if left.is_empty() {
         return Ok(Some(Value::Int(-1)));

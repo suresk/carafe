@@ -1,6 +1,7 @@
 //! The interpreter: a loop that executes one instruction at a time.
 
 use crate::bytecode::{Instruction, Operand};
+use crate::cache::{Resolved, initialized};
 use crate::casts::is_subtype;
 use crate::class::Class;
 use crate::descriptor::FieldType;
@@ -67,9 +68,11 @@ pub struct Vm {
     pub(crate) lambdas: usize,
     /// The main thread's `Thread` object, once something has asked for it.
     pub thread: Option<Ref>,
-    /// What the program reads from standard input, and how much it has read.
+    /// Standard input that has arrived, and how much of it has been read.
     pub stdin: Vec<u8>,
     pub(crate) stdin_read: usize,
+    /// Where more standard input comes from when that runs out, if anywhere.
+    pub stdin_source: Option<Box<dyn std::io::Read>>,
     // @show
 }
 
@@ -474,6 +477,20 @@ impl Vm {
     /// `new`, `getfield` and `putfield`.
     fn object_op(&mut self, opcode: u8, index: u16) -> Result<()> {
         let from = self.frames.last().expect("a frame").class.clone();
+        // @hide
+        match from.cached(index) {
+            Some(Resolved::Class(class)) => {
+                let object = self.heap.new_object(class);
+                return self
+                    .frames
+                    .last_mut()
+                    .expect("a frame")
+                    .push(Value::Ref(object));
+            }
+            Some(Resolved::Field(slot)) => return self.field_access(opcode, slot),
+            _ => {}
+        }
+        // @show
         if opcode == NEW {
             let name = from.file.constant_pool.class_name(index)?;
             let class = self.resolve_class(&from, name)?;
@@ -485,6 +502,11 @@ impl Vm {
             self.initialize(&class)?;
             // @show
             let object = self.heap.new_object(&class);
+            // @hide
+            if initialized(&class) {
+                from.cache(index, Resolved::Class(class.clone()));
+            }
+            // @show
             return self.frames.last_mut().expect("a frame").push(Value::Ref(object));
         }
         let (owner, field) = self.resolve_field(&from, index)?;
@@ -497,6 +519,9 @@ impl Vm {
             return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
         let slot = owner.field(&field.name, &field.descriptor)?;
+        // @hide
+        from.cache(index, Resolved::Field(slot.clone()));
+        // @show
         let frame = self.frames.last_mut().expect("a frame");
         if opcode == GETFIELD {
             let object = non_null(frame.pop_ref()?)?;

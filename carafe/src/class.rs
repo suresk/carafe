@@ -1,6 +1,7 @@
 //! A class as the running VM holds it.
 
 use crate::bytecode::Instruction;
+use crate::cache::Resolved;
 use crate::class_file::ClassFile;
 use crate::descriptor::FieldType;
 use crate::dynamic::CallSite;
@@ -37,6 +38,8 @@ pub struct Class {
     pub boot: bool,
     /// The linked `invokedynamic` call sites, by method index and pc.
     pub call_sites: RefCell<HashMap<(usize, u16), Rc<CallSite>>>,
+    /// What each constant pool entry resolved to, by index, once it has been.
+    pub(crate) resolved: Box<[OnceCell<Resolved>]>,
     // @show
 }
 
@@ -48,6 +51,7 @@ impl Class {
         let static_fields =
             file.fields.iter().filter(|f| f.access_flags.has(AccessFlags::STATIC));
         let statics = static_fields.map(|f| zero(&f.ty)).collect();
+        let count = file.constant_pool.count();
         // @show
         Class {
             file,
@@ -61,6 +65,7 @@ impl Class {
             mirror: Cell::new(Ref::NULL),
             boot: false,
             call_sites: RefCell::new(HashMap::new()),
+            resolved: (0..count).map(|_| OnceCell::new()).collect(),
             // @show
         }
     }

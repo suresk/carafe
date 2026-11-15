@@ -1,5 +1,6 @@
 //! Static fields and class initialization (JVMS 5.5).
 
+use crate::cache::{Resolved, initialized};
 use crate::class::{Class, State, coerce};
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
@@ -112,6 +113,11 @@ impl Vm {
     /// the field before using it.
     pub(crate) fn static_op(&mut self, opcode: u8, index: u16) -> Result<()> {
         let from = self.frames.last().expect("a frame").class.clone();
+        // @hide
+        if let Some(Resolved::Static(owner, slot, ty)) = from.cached(index) {
+            return self.static_access(opcode, owner, *slot, ty);
+        }
+        // @show
         let (owner, field) = self.resolve_field(&from, index)?;
         if !field.access_flags.has(AccessFlags::STATIC) {
             let m = format!(
@@ -124,6 +130,14 @@ impl Vm {
         self.initialize(&owner)?;
         let slot =
             owner.static_slot(&field.name, &field.descriptor).expect("declared");
+        // @hide
+        if initialized(&owner) {
+            from.cache(
+                index,
+                Resolved::Static(owner.clone(), slot, field.ty.clone()),
+            );
+        }
+        // @show
         let frame = self.frames.last_mut().expect("a frame");
         if opcode == GETSTATIC {
             let value = owner.statics.borrow()[slot];
