@@ -182,6 +182,12 @@ impl ConstantPool {
     // @end
 
     // @listing pool-get
+    /// A pool of these entries, the first of which must be `Unusable`, as a
+    /// class carafe writes itself has.
+    pub(crate) fn new(entries: Vec<Constant>) -> ConstantPool {
+        ConstantPool { entries }
+    }
+
     /// `constant_pool_count`: one more than the highest index.
     pub fn count(&self) -> u16 {
         self.entries.len() as u16

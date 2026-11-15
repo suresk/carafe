@@ -4,11 +4,13 @@ use crate::class::Class;
 use crate::class_file::ClassFile;
 use crate::descriptor::{FieldType, MethodDescriptor};
 use crate::error::{Error, Result};
+use crate::heap::Ref;
 use crate::interpreter::Vm;
 use crate::loader::linkage;
 use crate::pool::{Constant, ConstantPool};
 use crate::reader::Reader;
 use crate::value::Value;
+use std::cell::Cell;
 use std::rc::Rc;
 
 // @listing bootstrap
@@ -44,11 +46,15 @@ pub fn bootstrap_methods(file: &ClassFile) -> Result<Vec<Bootstrap>> {
 // @listing call-site
 /// What an `invokedynamic` instruction does, decided once, when it is
 /// first executed, by its bootstrap method.
-#[derive(Debug)]
 pub enum CallSite {
     /// String concatenation: the pieces of the result, in order, and the
     /// types of the arguments the instruction pops.
     Concat { pieces: Vec<Piece>, args: Vec<FieldType> },
+    // @hide
+    /// A lambda: the class carafe made for it, the types of the values it
+    /// captures, and its one object if it captures none.
+    Lambda { class: Rc<Class>, captures: Vec<FieldType>, instance: Cell<Ref> },
+    // @show
 }
 
 /// A piece of a concatenation: text from the recipe, or argument `n`.
@@ -70,51 +76,68 @@ impl Vm {
         let site = match site {
             Some(site) => site,
             None => {
-                let site = Rc::new(link(&class, index)?);
+                let site = Rc::new(self.link(&class, index)?);
                 class.call_sites.borrow_mut().insert(key, site.clone());
                 site
             }
         };
         match &*site {
+            // @hide
+            CallSite::Lambda { class, captures, instance } => {
+                self.new_lambda(class, captures, instance)
+            }
+            // @show
             CallSite::Concat { pieces, args } => self.concat(pieces, args),
         }
     }
     // @end
 }
 
-// @listing link
-/// Links the call site of the `InvokeDynamic` constant `index` by running
-/// its bootstrap method, which carafe knows by name.
-fn link(class: &Class, index: u16) -> Result<CallSite> {
-    let pool = &class.file.constant_pool;
-    let &Constant::InvokeDynamic { bootstrap, name_and_type } = pool.get(index)?
-    else {
-        return Err(Error::Verify(format!("#{index} is not an InvokeDynamic")));
-    };
-    let (_, descriptor) = pool.name_and_type(name_and_type)?;
-    let descriptor = MethodDescriptor::parse(descriptor)?;
-    let bootstraps = bootstrap_methods(&class.file)?;
-    let Some(b) = bootstraps.get(usize::from(bootstrap)) else {
-        let m = format!("no bootstrap method #{bootstrap}");
-        return Err(Error::ClassFormat(m));
-    };
-    let &Constant::MethodHandle { reference, .. } = pool.get(b.method)? else {
-        return Err(Error::ClassFormat(format!(
-            "#{} is not a MethodHandle",
-            b.method
-        )));
-    };
-    let method = pool.member(reference)?;
-    match (method.class, method.name) {
-        ("java/lang/invoke/StringConcatFactory", "makeConcatWithConstants") => {
-            concat_site(pool, &b.args, descriptor)
-        }
-        (owner, name) => {
-            Err(Error::Unsupported(format!("the bootstrap method {owner}.{name}")))
+impl Vm {
+    // @listing link
+    /// Links the call site of the `InvokeDynamic` constant `index` by running
+    /// its bootstrap method, which carafe knows by name.
+    fn link(&mut self, class: &Class, index: u16) -> Result<CallSite> {
+        let pool = &class.file.constant_pool;
+        let &Constant::InvokeDynamic { bootstrap, name_and_type } =
+            pool.get(index)?
+        else {
+            return Err(Error::Verify(format!("#{index} is not an InvokeDynamic")));
+        };
+        let (_, descriptor) = pool.name_and_type(name_and_type)?;
+        let descriptor = MethodDescriptor::parse(descriptor)?;
+        let bootstraps = bootstrap_methods(&class.file)?;
+        let Some(b) = bootstraps.get(usize::from(bootstrap)) else {
+            let m = format!("no bootstrap method #{bootstrap}");
+            return Err(Error::ClassFormat(m));
+        };
+        let &Constant::MethodHandle { reference, .. } = pool.get(b.method)? else {
+            return Err(Error::ClassFormat(format!(
+                "#{} is not a MethodHandle",
+                b.method
+            )));
+        };
+        let method = pool.member(reference)?;
+        match (method.class, method.name) {
+            ("java/lang/invoke/StringConcatFactory", "makeConcatWithConstants") => {
+                concat_site(pool, &b.args, descriptor)
+            }
+            // @hide
+            (
+                "java/lang/invoke/LambdaMetafactory",
+                "metafactory" | "altMetafactory",
+            ) => {
+                let (name, _) = pool.name_and_type(name_and_type)?;
+                self.lambda_site(class, name, descriptor, &b.args)
+            }
+            // @show
+            (owner, name) => Err(Error::Unsupported(format!(
+                "the bootstrap method {owner}.{name}"
+            ))),
         }
     }
+    // @end
 }
-// @end
 
 // @listing concat-site
 /// The call site of `makeConcatWithConstants`, from its recipe: in the

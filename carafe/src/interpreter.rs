@@ -63,6 +63,8 @@ pub struct Vm {
     pub(crate) headroom: usize,
     /// Each exception's stack trace, recorded by `fillInStackTrace`.
     pub(crate) backtraces: HashMap<Ref, Vec<TraceFrame>>,
+    /// How many lambda classes carafe has made, which numbers the next one.
+    pub(crate) lambdas: usize,
     // @show
 }
 

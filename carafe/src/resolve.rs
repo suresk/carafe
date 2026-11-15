@@ -172,7 +172,7 @@ fn check_access(
 
 /// The host of `class`'s nest: the class its `NestHost` attribute names, or
 /// the class itself (JVMS 5.4.4).
-fn nest_host(class: &Class) -> String {
+pub(crate) fn nest_host(class: &Class) -> String {
     let attribute = class.file.attributes.iter().find(|a| a.name == "NestHost");
     let host = attribute.and_then(|a| {
         let index = Reader::new(&a.info).u2().ok()?;

@@ -61,8 +61,8 @@ fn a_recipe() {
     let sites = class.call_sites.borrow();
     let text = |s: &str| Piece::Text(s.encode_utf16().collect());
     let wanted = [text("a\u{1}b"), Piece::Arg(0), text("\u{2}"), Piece::Arg(1)];
-    let found = sites.values().any(|site| match &**site {
-        CallSite::Concat { pieces, .. } => pieces[..] == wanted[..],
+    let found = sites.values().any(|site| {
+        matches!(&**site, CallSite::Concat { pieces, .. } if pieces[..] == wanted[..])
     });
     assert!(found); // "a\u0001b" + count + "\u0002" + c
     // @end
