@@ -1,9 +1,11 @@
 //! Native methods: the parts of the class library written in Rust.
 
+use crate::arrays;
 use crate::error::Result;
 use crate::frame::Frame;
 use crate::interpreter::Vm;
 use crate::loader::linkage;
+use crate::mirror;
 use crate::resolve::external;
 use crate::value::Value;
 
@@ -14,8 +16,18 @@ pub type Native = fn(&mut Vm, &[Value]) -> Result<Option<Value>>;
 
 /// The native method `class.name` with this descriptor, if carafe has it.
 fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
-    Some(match (class, name, descriptor) {
-        ("java/io/PrintStream", "write0", "(ILjava/lang/String;)V") => write0,
+    Some(match format!("{class}.{name}{descriptor}").as_str() {
+        "java/io/PrintStream.write0(ILjava/lang/String;)V" => write0,
+        // @hide
+        "java/lang/System.arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V" => {
+            arrays::arraycopy
+        }
+        "java/lang/Object.clone()Ljava/lang/Object;" => arrays::clone,
+        "java/lang/Class.registerNatives()V" => mirror::register_natives,
+        "java/lang/Class.desiredAssertionStatus0(Ljava/lang/Class;)Z" => {
+            mirror::desired_assertion_status
+        }
+        // @show
         _ => return None,
     })
 }

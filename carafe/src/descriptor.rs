@@ -129,3 +129,24 @@ impl fmt::Display for FieldType {
     }
 }
 // @end
+
+impl FieldType {
+    // @listing descriptor
+    /// The type as a descriptor: `I`, `Ljava/lang/String;`, `[[J`. An array
+    /// class's name is its descriptor.
+    pub fn descriptor(&self) -> String {
+        match self {
+            FieldType::Byte => "B".into(),
+            FieldType::Char => "C".into(),
+            FieldType::Double => "D".into(),
+            FieldType::Float => "F".into(),
+            FieldType::Int => "I".into(),
+            FieldType::Long => "J".into(),
+            FieldType::Short => "S".into(),
+            FieldType::Boolean => "Z".into(),
+            FieldType::Object(name) => format!("L{name};"),
+            FieldType::Array(element) => format!("[{}", element.descriptor()),
+        }
+    }
+    // @end
+}

@@ -28,6 +28,8 @@ pub struct Class {
     pub state: Cell<State>,
     /// The values of the static fields, in the order the class declares them.
     pub statics: RefCell<Vec<Value>>,
+    /// The class's `java.lang.Class` object, once something has asked for it.
+    pub mirror: Cell<Ref>,
     // @show
 }
 
@@ -49,6 +51,7 @@ impl Class {
             interfaces: Vec::new(),
             state: Cell::new(State::Uninitialized),
             statics: RefCell::new(statics),
+            mirror: Cell::new(Ref::NULL),
             // @show
         }
     }

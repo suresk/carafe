@@ -230,3 +230,14 @@ impl Heap {
     }
     // @end
 }
+
+impl Heap {
+    // @listing heap-copy
+    /// Copies `length` bytes from offset `from` to offset `to`; the two
+    /// ranges may overlap.
+    pub fn copy(&mut self, from: u32, to: u32, length: u32) {
+        let from = from as usize;
+        self.bytes.copy_within(from..from + length as usize, to as usize);
+    }
+    // @end
+}

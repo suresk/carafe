@@ -2,9 +2,13 @@
 
 use crate::class::Class;
 use crate::class_file::ClassFile;
+use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
+use crate::heap::Ref;
 use crate::interpreter::Vm;
+use crate::pool::ConstantPool;
+use crate::reader::Reader;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -46,6 +50,11 @@ impl Vm {
         if let Some(class) = self.classes.get(name) {
             return Ok(class.clone());
         }
+        // @hide
+        if name.starts_with('[') {
+            return self.load_array_class(name);
+        }
+        // @show
         let Some(bytes) = self.class_path.find(name)? else {
             return Err(linkage("java/lang/NoClassDefFoundError", name.to_string()));
         };
@@ -118,6 +127,64 @@ impl Vm {
             return Err(linkage("java/lang/ClassCircularityError", name.to_string()));
         }
         self.load(superclass)
+    }
+    // @end
+}
+
+impl Vm {
+    // @listing load-array-class
+    /// An array class, created by the VM rather than read from a class file
+    /// (JVMS 5.3.3): `public final abstract`, a subclass of `Object` that
+    /// implements `Cloneable` and `Serializable`, with no fields or methods
+    /// of its own. A reference element type's class is loaded first.
+    fn load_array_class(&mut self, name: &str) -> Result<Rc<Class>> {
+        let FieldType::Array(element) = FieldType::parse(name)? else {
+            return Err(linkage("java/lang/NoClassDefFoundError", name.to_string()));
+        };
+        match *element {
+            FieldType::Object(ref class) => {
+                self.load(class)?;
+            }
+            FieldType::Array(_) => {
+                self.load(&element.descriptor())?;
+            }
+            _ => {}
+        }
+        let object = self.load("java/lang/Object")?;
+        let interfaces = ["java/lang/Cloneable", "java/io/Serializable"];
+        let interfaces: Vec<Rc<Class>> =
+            interfaces.iter().map(|i| self.load(i)).collect::<Result<_>>()?;
+        let flags = AccessFlags::PUBLIC | AccessFlags::FINAL | AccessFlags::ABSTRACT;
+        let file = ClassFile {
+            minor_version: 0,
+            major_version: 69,
+            constant_pool: ConstantPool::read(&mut Reader::new(&[0, 1]))?, // empty
+            access_flags: AccessFlags(flags),
+            this_class: name.to_string(),
+            super_class: Some("java/lang/Object".to_string()),
+            interfaces: interfaces
+                .iter()
+                .map(|i| i.file.this_class.clone())
+                .collect(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let mut class = Class::extending(file, object);
+        class.interfaces = interfaces;
+        let class = Rc::new(class);
+        self.classes.insert(name.to_string(), class.clone());
+        self.loaded.push(name.to_string());
+        Ok(class)
+    }
+
+    /// The class of the object or array at `r`.
+    pub fn class_of(&mut self, r: Ref) -> Result<Rc<Class>> {
+        if self.heap.is_array(r) {
+            let element = self.heap.element_type(r).clone();
+            return self.load(&FieldType::Array(Box::new(element)).descriptor());
+        }
+        Ok(self.heap.class_of(r).clone())
     }
     // @end
 }

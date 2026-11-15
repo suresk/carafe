@@ -8,6 +8,7 @@ use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::{Heap, Ref};
 use crate::loader::{ClassPath, linkage};
+use crate::mirror::is_class;
 use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
@@ -143,6 +144,12 @@ impl Vm {
             }
             // @hide
             (LDC | LDC_W, &Operand::Constant(index))
+                if is_class(&frame.class, index) =>
+            {
+                let mirror = self.ldc_class(index)?;
+                self.frames.last_mut().expect("a frame").push(Value::Ref(mirror))?;
+            }
+            (LDC | LDC_W, &Operand::Constant(index))
                 if is_string(&frame.class, index) =>
             {
                 let string = self.ldc_string(index)?;
@@ -194,6 +201,8 @@ impl Vm {
                 numeric(frame, i.opcode)?
             }
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
+            (NEWARRAY | ANEWARRAY | MULTIANEWARRAY | ARRAYLENGTH, _)
+            | (IALOAD..=SALOAD | IASTORE..=SASTORE, _) => self.array_op(i)?,
             (GETSTATIC | PUTSTATIC, &Operand::Constant(index)) => {
                 self.static_op(i.opcode, index)?
             }
@@ -497,7 +506,7 @@ impl Vm {
 
 // @listing non-null
 /// `r`, or a `NullPointerException` if it is `null`.
-fn non_null(r: Ref) -> Result<Ref> {
+pub(crate) fn non_null(r: Ref) -> Result<Ref> {
     if r == Ref::NULL {
         let class = "java/lang/NullPointerException";
         return Err(Error::Exception { class, message: None });
@@ -527,11 +536,7 @@ impl Vm {
                 resolved.name
             )));
         };
-        let this = non_null(this)?;
-        if self.heap.is_array(this) {
-            return Err(Error::Unsupported(format!("{} of an array", resolved.name)));
-        }
-        let receiver = self.heap.class_of(this).clone();
+        let receiver = self.class_of(non_null(this)?)?;
         let (class, method) = match select(&receiver, &class, method) {
             Some((c, m))
                 if !c.file.methods[m].access_flags.has(AccessFlags::ABSTRACT) =>

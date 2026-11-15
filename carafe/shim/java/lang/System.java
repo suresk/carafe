@@ -13,5 +13,10 @@ public final class System {
 
     public static final PrintStream out = new PrintStream(1);
     public static final PrintStream err = new PrintStream(2);
+    // @hide
+
+    public static native void arraycopy(Object src, int srcPos, Object dest, int destPos,
+                                        int length);
+    // @show
 }
 // @end

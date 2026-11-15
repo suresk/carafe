@@ -1,5 +1,6 @@
 //! carafe: the Java virtual machine you build in *Build a JVM in Rust*.
 
+mod arrays;
 mod attribute;
 mod boot;
 mod bytecode;
@@ -17,6 +18,7 @@ mod interpreter;
 mod jdk;
 mod loader;
 mod member;
+mod mirror;
 mod natives;
 mod numeric;
 pub mod opcode;
@@ -60,3 +62,4 @@ pub use challenges::ch08::{nestmates, references};
 pub use challenges::ch09::{init_cycles, static_values};
 pub use challenges::ch10::{initialized, java_hash};
 pub use challenges::ch11::vtable;
+pub use challenges::ch12::objects_and_arrays;
