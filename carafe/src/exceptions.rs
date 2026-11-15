@@ -251,11 +251,11 @@ impl Frame {
 // @listing trace-line
 impl TraceFrame {
     /// The frame as `printStackTrace` prints it: the class, the method, the
-    /// source file and line, and the module for a class in `java.base`.
+    /// source file and line, and the module for a class on the boot class
+    /// path, which is all `java.base`.
     pub fn line(&self) -> String {
         let name = dotted(&self.class.file.this_class);
-        let module = ["java.", "jdk.", "sun."].iter().any(|p| name.starts_with(p));
-        let module = if module { "java.base/" } else { "" };
+        let module = if self.class.boot { "java.base/" } else { "" };
         let method = &self.class.file.methods[self.method].name;
         let place = match (source_file(&self.class), self.line_number()) {
             (Some(file), Some(line)) => format!("{file}:{line}"),
