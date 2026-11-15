@@ -81,6 +81,7 @@ pub use challenges::ch17::{bootstrap_census, bootstrap_listing};
 pub use challenges::ch18::{captures, write_class};
 pub use challenges::ch19::{enum_switch, record_components};
 pub use challenges::ch20::{modifier_string, signature_classes};
+pub use challenges::ch21::{lambda_callers, packages};
 pub use dynamic::{Bootstrap, CallSite, Piece, bootstrap_methods};
 pub use exceptions::TraceFrame;
 pub use records::RecordMethod;

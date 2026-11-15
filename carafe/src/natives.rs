@@ -102,6 +102,9 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
          (Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;" => {
             reflection::new_instance0
         }
+        "java/lang/Class.getDeclaredFields0(Z)[Ljava/lang/reflect/Field;" => {
+            reflection::get_declared_fields
+        }
         "java/lang/Class.getDeclaredMethods0(Z)[Ljava/lang/reflect/Method;" => {
             reflection::get_declared_methods
         }

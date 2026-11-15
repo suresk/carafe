@@ -53,6 +53,6 @@ fn how_much_of_unsafe() {
     let (declared, done) =
         native_coverage(&mut vm, "jdk/internal/misc/Unsafe").unwrap();
     assert_eq!(declared, 68);
-    assert_eq!(done, 44);
+    assert_eq!(done, 45); // 44, and Chapter 21's objectFieldOffset0
     assert_eq!(native_coverage(&mut vm, "java/lang/Float").unwrap(), (2, 2));
 }

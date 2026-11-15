@@ -3,6 +3,7 @@
 use crate::class::Class;
 use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
+use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::Ref;
 use crate::interpreter::{Vm, non_null, select};
@@ -43,7 +44,7 @@ fn declared(vm: &mut Vm, args: &[Value], kind: Member) -> Result<Option<Value>> 
     let methods: Vec<usize> = (0..class.file.methods.len())
         .filter(|&m| {
             let method = &class.file.methods[m];
-            let public = method.access_flags.has(crate::flags::AccessFlags::PUBLIC);
+            let public = method.access_flags.has(AccessFlags::PUBLIC);
             let wanted = match kind {
                 Member::Method => !method.name.starts_with('<'),
                 Member::Constructor => method.name == "<init>",
@@ -188,11 +189,11 @@ pub(crate) fn invoke0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let (class, slot) = vm.member_of(method, "java/lang/reflect/Method")?;
     let flags = class.file.methods[slot].access_flags;
     let ret = class.file.methods[slot].ty.ret.clone();
-    let is_static = flags.has(crate::flags::AccessFlags::STATIC);
+    let is_static = flags.has(AccessFlags::STATIC);
     let receiver = if is_static { None } else { Some(non_null(receiver)?) };
     let values = vm.arguments(&class, slot, receiver, arguments)?;
     let (target_class, target) = match receiver {
-        Some(r) if !flags.has(crate::flags::AccessFlags::PRIVATE) => {
+        Some(r) if !flags.has(AccessFlags::PRIVATE) => {
             let receiver = vm.class_of(r)?;
             select(&receiver, &class, slot).expect("a method to select")
         }
@@ -211,7 +212,11 @@ pub(crate) fn invoke0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
 impl Vm {
     /// The class and method index that a `Method` or `Constructor` stands
     /// for, from its `clazz` and `slot` fields.
-    fn member_of(&mut self, member: Ref, kind: &str) -> Result<(Rc<Class>, usize)> {
+    pub(crate) fn member_of(
+        &mut self,
+        member: Ref,
+        kind: &str,
+    ) -> Result<(Rc<Class>, usize)> {
         let class = self.load(kind)?;
         let read = |vm: &Vm, name: &str, ty: &str| -> Result<Value> {
             let slot = class.field(name, ty)?;
@@ -548,4 +553,74 @@ fn inner_entry(class: &Class) -> Result<Option<(u16, u16)>> {
     }
     Ok(None)
 }
+// @end
+
+// @listing declared-fields
+/// `Class.getDeclaredFields0(boolean publicOnly)`: a `Field` for each field
+/// the class declares, whose slot is its index in the class file.
+pub(crate) fn get_declared_fields(
+    vm: &mut Vm,
+    args: &[Value],
+) -> Result<Option<Value>> {
+    let [Value::Ref(mirror), Value::Int(public_only)] = *args else { unreachable!() };
+    let class = vm.class_of_mirror(mirror)?;
+    let fields: Vec<usize> = (0..class.file.fields.len())
+        .filter(|&f| {
+            let public = class.file.fields[f].access_flags.has(AccessFlags::PUBLIC);
+            public_only == 0 || public
+        })
+        .collect();
+    let field_type = FieldType::Object("java/lang/reflect/Field".into());
+    let array = vm.heap.new_array(&field_type, fields.len() as u32)?;
+    vm.heap.roots.push(array);
+    for (i, &f) in fields.iter().enumerate() {
+        let field = vm.reflect_field(&class, f)?;
+        let array = *vm.heap.roots.last().expect("pushed above");
+        let at = vm.heap.element(array, i as i32)?;
+        vm.heap.write(at, &field_type, Value::Ref(field))?;
+    }
+    Ok(Some(Value::Ref(vm.heap.roots.pop().expect("pushed above"))))
+}
+
+impl Vm {
+    /// A `java.lang.reflect.Field` for field `index` of `class`, made by its
+    /// constructor: declaring class, name, type, modifiers, whether it is a
+    /// final that can't be changed even by reflection, slot, generic
+    /// signature and annotations.
+    fn reflect_field(&mut self, class: &Rc<Class>, index: usize) -> Result<Ref> {
+        let field = &class.file.fields[index];
+        let (name, ty, flags) =
+            (field.name.clone(), field.ty.clone(), field.access_flags);
+        let base = self.heap.roots.len();
+        let mirror = self.mirror(class)?;
+        self.heap.roots.push(mirror);
+        let name = self.intern(&name.encode_utf16().collect::<Vec<u16>>())?;
+        self.heap.roots.push(name);
+        let ty = self.component_mirror(&ty.descriptor())?;
+        self.heap.roots.push(ty);
+        let field_class = self.load("java/lang/reflect/Field")?;
+        self.initialize(&field_class)?;
+        let object = self.heap.new_object(&field_class);
+        let mut args = vec![Value::Ref(object)];
+        args.extend(self.heap.roots.drain(base..).map(Value::Ref));
+        let trusted = flags.has(AccessFlags::FINAL) && flags.has(AccessFlags::STATIC);
+        let modifiers = i32::from(flags.0 & RECOGNIZED_FIELD_MODIFIERS);
+        args.extend([
+            Value::Int(modifiers),
+            Value::Int(trusted.into()),
+            Value::Int(index as i32),
+        ]);
+        args.extend([Value::Ref(Ref::NULL); 2]); // signature and annotations
+        let descriptor = "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;IZI\
+                          Ljava/lang/String;[B)V";
+        let init = field_class.method("<init>", descriptor)?;
+        self.heap.roots.push(object);
+        let made = self.invoke_method(&field_class, init, &args);
+        let object = self.heap.roots.pop().expect("pushed above");
+        made.map(|_| object)
+    }
+}
+
+/// HotSpot's `JVM_RECOGNIZED_FIELD_MODIFIERS`.
+const RECOGNIZED_FIELD_MODIFIERS: u16 = 0x50df;
 // @end

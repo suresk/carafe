@@ -1,5 +1,6 @@
 //! `jdk.internal.misc.Unsafe`: the JDK's access to memory by offset.
 
+use crate::class::Slot;
 use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::heap::{ARRAY_HEADER, Ref, size_of};
@@ -40,6 +41,24 @@ fn object_field_offset(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     };
     Ok(Some(Value::Long(slot.offset.into())))
 }
+
+// @hide
+/// `Unsafe.objectFieldOffset0(Field)`: the same, for the field a `Field`
+/// stands for, by its declaring class and its slot.
+fn field_offset(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [_, Value::Ref(field)] = *args else { unreachable!("checked descriptor") };
+    let (class, index) = vm.member_of(field, "java/lang/reflect/Field")?;
+    let declared = &class.file.fields[index];
+    let same =
+        |f: &&Slot| f.name == declared.name && f.descriptor == declared.descriptor;
+    let found = class.layout.fields.iter().rev().find(same);
+    let Some(slot) = found else {
+        let class = "java/lang/InternalError";
+        return Err(Error::Exception { class, message: Some(declared.name.clone()) });
+    };
+    Ok(Some(Value::Long(slot.offset.into())))
+}
+// @show
 // @end
 
 // @listing unsafe-access
@@ -159,6 +178,9 @@ pub(crate) fn find(name: &str) -> Option<Native> {
         "arrayBaseOffset0" => array_base_offset,
         "arrayIndexScale0" => array_index_scale,
         "objectFieldOffset1" => object_field_offset,
+        // @hide
+        "objectFieldOffset0" => field_offset,
+        // @show
         "registerNatives" | "fullFence" => crate::lang::nothing,
         _ => return None,
     })
