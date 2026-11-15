@@ -1,0 +1,12 @@
+[package]
+name = "carafe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Java virtual machine you build in 'Build a JVM in Rust'."
+license = "MIT OR Apache-2.0"
+authors = ["Spencer Uresk"]
+repository = "https://github.com/suresk/carafe"
+readme = "../README.md"
+
+[dependencies]

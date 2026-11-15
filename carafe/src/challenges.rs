@@ -1,0 +1,4 @@
+//! Reference solutions to the end-of-chapter challenges. Each one is written with
+//! only what its chapter has built.
+
+pub mod ch01;
