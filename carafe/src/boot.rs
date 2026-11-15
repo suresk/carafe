@@ -24,6 +24,9 @@ impl Vm {
         let java_base = jdk.java_base(work)?;
         let mut vm = Vm::new();
         vm.class_path = ClassPath { dirs: vec![shims, java_base, app.to_path_buf()] };
+        // @hide
+        vm.boot_dirs = 2;
+        // @show
         Ok(vm)
     }
 

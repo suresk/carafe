@@ -66,6 +66,15 @@ impl Vm {
         self.loading.push(name.to_string());
         let defined = self.define(file);
         self.loading.pop();
+        // @hide
+        let defined = defined.map(|mut class| {
+            let boot = self.class_path.dirs.iter().take(self.boot_dirs);
+            class.boot = boot
+                .into_iter()
+                .any(|dir| dir.join(format!("{name}.class")).is_file());
+            class
+        });
+        // @show
         let class = Rc::new(defined?);
         self.classes.insert(name.to_string(), class.clone());
         self.loaded.push(name.to_string());
@@ -172,6 +181,13 @@ impl Vm {
         };
         let mut class = Class::extending(file, object);
         class.interfaces = interfaces;
+        // @hide
+        class.boot = match *element {
+            FieldType::Object(ref name) => self.load(name)?.boot,
+            FieldType::Array(_) => self.load(&element.descriptor())?.boot,
+            _ => true,
+        };
+        // @show
         let class = Rc::new(class);
         self.classes.insert(name.to_string(), class.clone());
         self.loaded.push(name.to_string());

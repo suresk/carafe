@@ -1,6 +1,7 @@
 //! Resolving symbolic references to classes, fields and methods
 //! (JVMS 5.4.3), with the access checks of JVMS 5.4.4.
 
+use crate::casts::is_subtype;
 use crate::class::Class;
 use crate::descriptor::{FieldType, MethodDescriptor};
 use crate::error::Result;
@@ -8,6 +9,7 @@ use crate::flags::AccessFlags;
 use crate::interpreter::Vm;
 use crate::loader::linkage;
 use crate::member::Field;
+use crate::pool::Constant;
 use crate::reader::Reader;
 use std::rc::Rc;
 
@@ -63,6 +65,12 @@ impl Vm {
         from: &Class,
         index: u16,
     ) -> Result<(Rc<Class>, usize)> {
+        // @hide
+        let constant = from.file.constant_pool.get(index)?;
+        if let Constant::InterfaceMethodref { .. } = constant {
+            return self.resolve_interface_method(from, index);
+        }
+        // @show
         let target = from.file.constant_pool.member(index)?;
         let class = self.resolve_class(from, target.class)?;
         let ty = MethodDescriptor::parse(target.descriptor)?;
@@ -218,5 +226,99 @@ pub(crate) fn find_in_superclasses(
         c = current.superclass.clone();
     }
     None
+}
+// @end
+
+impl Vm {
+    // @listing resolve-interface-method
+    /// Resolves the `InterfaceMethodref` at `index` in `from`'s pool (JVMS
+    /// 5.4.3.4): a method of the interface, else a public method of `Object`,
+    /// else a maximally specific method of its superinterfaces.
+    pub fn resolve_interface_method(
+        &mut self,
+        from: &Class,
+        index: u16,
+    ) -> Result<(Rc<Class>, usize)> {
+        let target = from.file.constant_pool.member(index)?;
+        let class = self.resolve_class(from, target.class)?;
+        if !class.file.access_flags.has(AccessFlags::INTERFACE) {
+            let m = format!(
+                "Found class {}, but interface was expected",
+                dotted(target.class)
+            );
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
+        }
+        let (name, descriptor) = (target.name, target.descriptor);
+        let object = class.superclass.clone().filter(|object| {
+            object.method(name, descriptor).is_ok_and(|m| {
+                let flags = object.file.methods[m].access_flags;
+                flags.has(AccessFlags::PUBLIC) && !flags.has(AccessFlags::STATIC)
+            })
+        });
+        let found = match class.method(name, descriptor) {
+            Ok(m) => Some((class.clone(), m)),
+            Err(_) => match object {
+                Some(object) => {
+                    Some((object.clone(), object.method(name, descriptor)?))
+                }
+                None => {
+                    let specific = maximally_specific(&class, name, descriptor);
+                    let concrete = specific.iter().find(|(c, m)| {
+                        !c.file.methods[*m].access_flags.has(AccessFlags::ABSTRACT)
+                    });
+                    concrete.or(specific.first()).cloned()
+                }
+            },
+        };
+        let Some((owner, method)) = found else {
+            let ty = MethodDescriptor::parse(descriptor)?;
+            let m = format!("'{}'", external(target.class, name, &ty));
+            return Err(linkage("java/lang/NoSuchMethodError", m));
+        };
+        let flags = owner.file.methods[method].access_flags;
+        check_access(from, &owner, flags, "method", name)?;
+        Ok((owner, method))
+    }
+    // @end
+}
+
+// @listing maximally-specific
+/// The maximally specific superinterface methods of `class` with this name
+/// and descriptor (JVMS 5.4.3.3): the non-private, non-static methods its
+/// superinterfaces declare, without those that a more specific one, in a
+/// subinterface, overrides.
+pub(crate) fn maximally_specific(
+    class: &Rc<Class>,
+    name: &str,
+    descriptor: &str,
+) -> Vec<(Rc<Class>, usize)> {
+    let mut interfaces: Vec<Rc<Class>> = Vec::new();
+    superinterfaces(class, &mut interfaces);
+    let skip = AccessFlags::PRIVATE | AccessFlags::STATIC;
+    let candidates: Vec<(Rc<Class>, usize)> = interfaces
+        .iter()
+        .filter_map(|i| {
+            let m = i.method(name, descriptor).ok()?;
+            (!i.file.methods[m].access_flags.has(skip)).then(|| (i.clone(), m))
+        })
+        .collect();
+    let overridden = |c: &Rc<Class>| {
+        candidates.iter().any(|(d, _)| !Rc::ptr_eq(d, c) && is_subtype(d, c))
+    };
+    candidates.iter().filter(|(c, _)| !overridden(c)).cloned().collect()
+}
+
+/// Every superinterface of `class`, direct or not, through its superclasses
+/// too, each once.
+fn superinterfaces(class: &Rc<Class>, out: &mut Vec<Rc<Class>>) {
+    for interface in &class.interfaces {
+        if !out.iter().any(|seen| Rc::ptr_eq(seen, interface)) {
+            out.push(interface.clone());
+            superinterfaces(interface, out);
+        }
+    }
+    if let Some(superclass) = &class.superclass {
+        superinterfaces(superclass, out);
+    }
 }
 // @end

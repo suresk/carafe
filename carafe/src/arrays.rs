@@ -50,6 +50,13 @@ impl Vm {
                 let array = non_null(self.frame().pop_ref()?)?;
                 let at = self.heap.element(array, index)?;
                 let ty = self.heap.element_type(array).clone();
+                // @hide
+                if let Value::Ref(stored) = value
+                    && stored != Ref::NULL
+                {
+                    self.check_store(array, stored)?;
+                }
+                // @show
                 return self.heap.write(at, &ty, value);
             }
         };
@@ -182,6 +189,22 @@ pub(crate) fn arraycopy(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     }
     let size = size_of(&from);
     let at = |r: Ref, pos: i32| r.0 + ARRAY_HEADER + pos as u32 * size;
+    // @hide
+    if !primitive(&from) {
+        let storable = vm.storable(src, src_pos, dest, length)?;
+        if storable < length {
+            vm.heap.copy(
+                at(src, src_pos),
+                at(dest, dest_pos),
+                storable as u32 * size,
+            );
+            return Err(store(format!(
+                "element type mismatch: can not cast one of the elements of {from}[] \
+                 to the type of the destination array, {to}"
+            )));
+        }
+    }
+    // @show
     vm.heap.copy(at(src, src_pos), at(dest, dest_pos), length as u32 * size);
     Ok(None)
 }

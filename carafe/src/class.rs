@@ -30,6 +30,9 @@ pub struct Class {
     pub statics: RefCell<Vec<Value>>,
     /// The class's `java.lang.Class` object, once something has asked for it.
     pub mirror: Cell<Ref>,
+    /// Whether the class came from the boot class path: `java.base` and the
+    /// shims, as opposed to the program's own classes.
+    pub boot: bool,
     // @show
 }
 
@@ -52,6 +55,7 @@ impl Class {
             state: Cell::new(State::Uninitialized),
             statics: RefCell::new(statics),
             mirror: Cell::new(Ref::NULL),
+            boot: false,
             // @show
         }
     }

@@ -1,6 +1,7 @@
 //! The interpreter: a loop that executes one instruction at a time.
 
 use crate::bytecode::{Instruction, Operand};
+use crate::casts::is_subtype;
 use crate::class::Class;
 use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
@@ -12,7 +13,9 @@ use crate::mirror::is_class;
 use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
-use crate::resolve::{dotted, external, find_in_superclasses, is_subclass, package};
+use crate::resolve::{
+    dotted, external, find_in_superclasses, is_subclass, maximally_specific, package,
+};
 use crate::strings::is_string;
 use crate::value::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -47,6 +50,9 @@ pub struct Vm {
     pub stderr: Vec<u8>,
     /// The native methods called so far, as `class.name` + descriptor.
     pub natives: BTreeSet<String>,
+    /// How many directories at the start of the class path are the boot
+    /// class path, which `Vm::boot` sets.
+    pub boot_dirs: usize,
     // @show
 }
 
@@ -203,6 +209,12 @@ impl Vm {
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
             (NEWARRAY | ANEWARRAY | MULTIANEWARRAY | ARRAYLENGTH, _)
             | (IALOAD..=SALOAD | IASTORE..=SASTORE, _) => self.array_op(i)?,
+            (CHECKCAST | INSTANCEOF, &Operand::Constant(index)) => {
+                self.type_check(i.opcode, index)?
+            }
+            (INVOKEINTERFACE, &Operand::Interface { index, .. }) => {
+                return self.invoke_interface(index);
+            }
             (GETSTATIC | PUTSTATIC, &Operand::Constant(index)) => {
                 self.static_op(i.opcode, index)?
             }
@@ -575,6 +587,16 @@ pub fn select(
         }
         class = c.superclass.clone();
     }
+    // @hide
+    // A default method: the one maximally specific method that isn't abstract.
+    let specific = maximally_specific(receiver, &m.name, &m.descriptor);
+    let mut defaults = specific.into_iter().filter(|(c, method)| {
+        !c.file.methods[*method].access_flags.has(AccessFlags::ABSTRACT)
+    });
+    if let (Some(default), None) = (defaults.next(), defaults.next()) {
+        return Some(default);
+    }
+    // @show
     None
 }
 
@@ -637,3 +659,44 @@ fn abstract_method(receiver: &Class, resolved: &Class, mr: usize) -> Error {
     linkage("java/lang/AbstractMethodError", message)
 }
 // @end
+
+impl Vm {
+    // @listing invoke-interface
+    /// `invokeinterface`: resolves an interface method, checks that the
+    /// object implements the interface, and selects as `invokevirtual` does.
+    fn invoke_interface(&mut self, index: u16) -> Result<Flow> {
+        let from = self.frames.last().expect("a caller").class.clone();
+        let (class, method) = self.resolve_method(&from, index)?;
+        let resolved = &class.file.methods[method];
+        let caller = self.frames.last_mut().expect("a caller");
+        let args = caller.pop_args(resolved.arg_slots())?;
+        let Some(&Value::Ref(this)) = args.first() else {
+            return Err(Error::Verify(format!(
+                "{} without an object",
+                resolved.name
+            )));
+        };
+        let receiver = self.class_of(non_null(this)?)?;
+        let interface = from.file.constant_pool.member(index)?.class;
+        let interface = self.load(interface)?;
+        if !is_subtype(&receiver, &interface) {
+            let m = format!(
+                "Class {} does not implement the requested interface {}",
+                dotted(&receiver.file.this_class),
+                dotted(&interface.file.this_class)
+            );
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
+        }
+        let (class, method) = match select(&receiver, &class, method) {
+            Some((c, m))
+                if !c.file.methods[m].access_flags.has(AccessFlags::ABSTRACT) =>
+            {
+                (c, m)
+            }
+            _ => return Err(abstract_method(&receiver, &class, method)),
+        };
+        self.call(Frame::new(class, method, &args)?)?;
+        Ok(Flow::Next)
+    }
+    // @end
+}
