@@ -87,3 +87,14 @@ impl Jdk {
     }
     // @end
 }
+
+impl Jdk {
+    // @listing jdk-java
+    /// Runs the `main` method of `class` on the JDK's own JVM, HotSpot, with
+    /// the directory `classes` as the class path, and returns what it prints.
+    pub fn java(&self, classes: &Path, class: &str) -> Result<String> {
+        let mut java = Command::new(self.home.join("bin").join("java"));
+        self.run(java.arg("-cp").arg(classes).arg(class))
+    }
+    // @end
+}

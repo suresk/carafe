@@ -141,3 +141,32 @@ fn verify(method: &str, problem: &str) -> Error {
     Error::Verify(format!("{method} {problem}"))
 }
 // @end
+
+impl Frame {
+    // @listing frame-pops
+    pub fn pop_long(&mut self) -> Result<i64> {
+        match self.pop()? {
+            Value::Long(v) => Ok(v),
+            other => Err(self.expected("a long", other)),
+        }
+    }
+
+    pub fn pop_float(&mut self) -> Result<f32> {
+        match self.pop()? {
+            Value::Float(v) => Ok(v),
+            other => Err(self.expected("a float", other)),
+        }
+    }
+
+    pub fn pop_double(&mut self) -> Result<f64> {
+        match self.pop()? {
+            Value::Double(v) => Ok(v),
+            other => Err(self.expected("a double", other)),
+        }
+    }
+
+    fn expected(&self, what: &str, found: Value) -> Error {
+        verify(self.name(), &format!("expected {what}, found {found:?}"))
+    }
+    // @end
+}

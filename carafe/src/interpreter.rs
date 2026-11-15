@@ -6,6 +6,7 @@ use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
+use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
 use crate::value::Value;
@@ -151,6 +152,9 @@ impl Vm {
                 frame.push(Value::Int(a.wrapping_neg()))?;
             }
             // @hide
+            (LCONST_0..=DCONST_1 | LADD..=LXOR | I2L..=DCMPG, _) => {
+                numeric(frame, i.opcode)?
+            }
             (INVOKESTATIC, &Operand::Constant(index)) => {
                 return self.invoke_static(index);
             }
