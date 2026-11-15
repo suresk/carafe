@@ -313,7 +313,7 @@ impl Vm {
             if common > 0 {
                 out += &format!("\t... {common} more\n");
             }
-            let cause = self.throwable_field(exception, "cause")?;
+            let cause = self.java_cause(exception)?;
             if cause == Ref::NULL || cause == exception {
                 return Ok(out);
             }
@@ -324,16 +324,48 @@ impl Vm {
 
     /// `object.toString()`, run in Java.
     pub(crate) fn java_to_string(&mut self, object: Ref) -> Result<String> {
-        let class = self.class_of(object)?;
-        let object_class = self.load("java/lang/Object")?;
-        let method = object_class.method("toString", "()Ljava/lang/String;")?;
-        let (class, method) =
-            crate::interpreter::select(&class, &object_class, method)
-                .expect("Object.toString");
-        match self.invoke_method(&class, method, &[Value::Ref(object)])? {
+        let string = self.call_virtual(
+            object,
+            "java/lang/Object",
+            "toString",
+            "()Ljava/lang/String;",
+        );
+        match string? {
             Some(Value::Ref(s)) if s != Ref::NULL => self.rust_string(s),
             _ => Ok("null".to_string()),
         }
+    }
+
+    /// `exception.getCause()`, run in Java, which a subclass may override, as
+    /// `InvocationTargetException` does.
+    pub(crate) fn java_cause(&mut self, exception: Ref) -> Result<Ref> {
+        let cause = "()Ljava/lang/Throwable;";
+        match self.call_virtual(
+            exception,
+            "java/lang/Throwable",
+            "getCause",
+            cause,
+        )? {
+            Some(Value::Ref(cause)) => Ok(cause),
+            _ => unreachable!("getCause returns a Throwable"),
+        }
+    }
+
+    /// Calls the method `name` of `owner` on `object`, selected from the
+    /// object's class as `invokevirtual` selects it.
+    fn call_virtual(
+        &mut self,
+        object: Ref,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+    ) -> Result<Option<Value>> {
+        let class = self.class_of(object)?;
+        let owner = self.load(owner)?;
+        let method = owner.method(name, descriptor)?;
+        let (class, method) =
+            crate::interpreter::select(&class, &owner, method).expect("a method");
+        self.invoke_method(&class, method, &[Value::Ref(object)])
     }
     // @end
 }

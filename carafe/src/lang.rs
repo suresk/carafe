@@ -1,6 +1,8 @@
 //! Natives of `java.lang` and of the JDK's internal startup classes.
 
+use crate::class::Slot;
 use crate::error::Result;
+use crate::heap::Ref;
 use crate::interpreter::Vm;
 use crate::value::Value;
 
@@ -75,5 +77,36 @@ pub(crate) fn nano_time(vm: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
 pub(crate) fn current_time_millis(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     Ok(Some(Value::Long(now.map_or(0, |d| d.as_millis() as i64))))
+}
+// @end
+
+// @listing references
+/// `Reference.get0()`, `refersTo0(Object)` and `clear0()`: soft, weak and
+/// phantom references, which a collector clears when nothing else refers to
+/// their object. carafe has no collector until JVM2, so a reference keeps
+/// its object until the program clears it.
+fn referent(vm: &mut Vm) -> Result<Slot> {
+    let class = vm.load("java/lang/ref/Reference")?;
+    Ok(class.field("referent", "Ljava/lang/Object;")?.clone())
+}
+
+pub(crate) fn reference_get(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(this)] = *args else { unreachable!("checked descriptor") };
+    let slot = referent(vm)?;
+    Ok(Some(vm.heap.read(this.0 + slot.offset, &slot.ty)))
+}
+
+pub(crate) fn refers_to(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(this), Value::Ref(object)] = *args else { unreachable!() };
+    let slot = referent(vm)?;
+    let same = vm.heap.read(this.0 + slot.offset, &slot.ty) == Value::Ref(object);
+    Ok(Some(Value::Int(same.into())))
+}
+
+pub(crate) fn reference_clear(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(this)] = *args else { unreachable!("checked descriptor") };
+    let slot = referent(vm)?;
+    vm.heap.write(this.0 + slot.offset, &slot.ty, Value::Ref(Ref::NULL))?;
+    Ok(None)
 }
 // @end

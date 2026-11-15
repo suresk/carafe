@@ -506,7 +506,7 @@ impl Assembler {
 
 // @listing wrappers
 /// For a primitive type, its wrapper class and the method that unboxes it.
-fn wrapper(ty: &FieldType) -> Option<(&'static str, &'static str)> {
+pub(crate) fn wrapper(ty: &FieldType) -> Option<(&'static str, &'static str)> {
     Some(match ty {
         FieldType::Boolean => ("java/lang/Boolean", "booleanValue"),
         FieldType::Byte => ("java/lang/Byte", "byteValue"),

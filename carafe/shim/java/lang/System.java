@@ -19,6 +19,7 @@ public final class System {
      */
     static void startup() {
         jdk.internal.misc.VM.saveProperties(new java.util.HashMap<>());
+        jdk.internal.access.SharedSecrets.setJavaLangAccess(new LangAccess());
     }
 
     /** The system properties: fixed values, the same on every platform. */

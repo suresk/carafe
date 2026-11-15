@@ -45,7 +45,7 @@ impl Vm {
     }
 
     /// The mirror of an array's component type, from its descriptor.
-    fn component_mirror(&mut self, descriptor: &str) -> Result<Ref> {
+    pub(crate) fn component_mirror(&mut self, descriptor: &str) -> Result<Ref> {
         match FieldType::parse(descriptor)? {
             FieldType::Object(name) => {
                 let class = self.load(&name)?;

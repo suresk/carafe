@@ -28,6 +28,11 @@ impl Vm {
             }
             State::Uninitialized => {}
         }
+        // @hide
+        if class.file.this_class == "jdk/internal/reflect/ReflectionFactory" {
+            self.before_reflection()?;
+        }
+        // @show
         class.state.set(State::InProgress);
         let result = self.run_initializers(class);
         class.state.set(match result {

@@ -4,10 +4,12 @@ use crate::arrays;
 use crate::error::Result;
 use crate::exceptions;
 use crate::frame::Frame;
+use crate::heap::Ref;
 use crate::interpreter::Vm;
 use crate::lang;
 use crate::loader::linkage;
 use crate::mirror;
+use crate::reflection;
 use crate::resolve::external;
 use crate::unsafe_access;
 use crate::value::Value;
@@ -71,13 +73,52 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/Throwable.fillInStackTrace(I)Ljava/lang/Throwable;" => {
             exceptions::fill_in_stack_trace
         }
+        "java/lang/ClassLoader.registerNatives()V" => lang::nothing,
+        "java/lang/Class.isHidden()Z" => reflection::is_hidden,
+        "java/lang/Class.getEnclosingMethod0()[Ljava/lang/Object;" => {
+            reflection::get_enclosing_method
+        }
+        "java/lang/Class.getDeclaringClass0()Ljava/lang/Class;" => {
+            reflection::get_declaring_class
+        }
+        "java/lang/Class.getSimpleBinaryName0()Ljava/lang/String;" => {
+            reflection::get_simple_binary_name
+        }
+        "jdk/internal/reflect/Reflection.getClassAccessFlags(Ljava/lang/Class;)I" => {
+            reflection::get_class_access_flags
+        }
+        "java/lang/ref/Reference.get0()Ljava/lang/Object;" => lang::reference_get,
+        "java/lang/ref/Reference.refersTo0(Ljava/lang/Object;)Z" => lang::refers_to,
+        "java/lang/ref/Reference.clear0()V" => lang::reference_clear,
+        "java/lang/Class.forName0(Ljava/lang/String;ZLjava/lang/ClassLoader;Ljava/lang/Class;)\
+         Ljava/lang/Class;" => reflection::for_name,
+        "java/lang/Class.getConstantPool()Ljdk/internal/reflect/ConstantPool;" => {
+            reflection::get_constant_pool
+        }
+        "java/lang/Class.getDeclaredConstructors0(Z)[Ljava/lang/reflect/Constructor;" => {
+            reflection::get_declared_constructors
+        }
+        "jdk/internal/reflect/DirectConstructorHandleAccessor$NativeAccessor.newInstance0\
+         (Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;" => {
+            reflection::new_instance0
+        }
+        "java/lang/Class.getDeclaredMethods0(Z)[Ljava/lang/reflect/Method;" => {
+            reflection::get_declared_methods
+        }
+        "jdk/internal/reflect/DirectMethodHandleAccessor$NativeAccessor.invoke0\
+         (Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;" => {
+            reflection::invoke0
+        }
+        "jdk/internal/reflect/Reflection.getCallerClass()Ljava/lang/Class;" => {
+            reflection::get_caller_class
+        }
         "java/lang/System.nanoTime()J" => lang::nano_time,
         "java/lang/System.currentTimeMillis()J" => lang::current_time_millis,
         "java/lang/reflect/Array.newArray(Ljava/lang/Class;I)Ljava/lang/Object;" => {
             mirror::new_array
         }
         "java/lang/NullPointerException.getExtendedNPEMessage()Ljava/lang/String;" => {
-            |_, _| Ok(Some(Value::Ref(crate::heap::Ref::NULL)))
+            |_, _| Ok(Some(Value::Ref(Ref::NULL)))
         }
         // @show
         _ => return None,

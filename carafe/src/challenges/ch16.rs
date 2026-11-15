@@ -71,7 +71,7 @@ fn enclosed(
             &format!("{prefix}\t"),
         )?;
     }
-    let cause = vm.throwable_field(exception, "cause")?;
+    let cause = vm.java_cause(exception)?;
     if cause != Ref::NULL && cause != exception {
         enclosed(vm, out, cause, &trace, "Caused by: ", prefix)?;
     }
