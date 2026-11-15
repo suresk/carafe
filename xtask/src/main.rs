@@ -10,7 +10,7 @@
 mod check;
 
 use carafe::{ClassFile, Jdk, Vm};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -83,6 +83,13 @@ fn run(dir: &str, class: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // @hide
+    // carafe reads all of standard input first: a pipe or a file, not a terminal.
+    let mut stdin = Vec::new();
+    if std::io::stdin().read_to_end(&mut stdin).is_ok() {
+        vm.stdin = stdin;
+    }
+    // @show
     let result = vm.run_main(class);
     std::io::stdout().write_all(&vm.stdout).expect("stdout");
     std::io::stderr().write_all(&vm.stderr).expect("stderr");

@@ -34,8 +34,9 @@ public class Pipelines {
         // IntSummaryStatistics.toString uses String.format, which carafe can't run.
         System.out.println(stats.getMin() + " " + stats.getMax() + " " + stats.getSum());
 
-        Map<String, List<String>> byCountry = cities.stream().collect(Collectors.groupingBy(
-                City::country, TreeMap::new, Collectors.mapping(City::name, Collectors.toList())));
+        Map<String, List<String>> byCountry = cities.stream().collect(
+                Collectors.groupingBy(City::country, TreeMap::new,
+                        Collectors.mapping(City::name, Collectors.toList())));
         System.out.println(byCountry);
         Map<Boolean, Long> big = cities.stream().collect(
                 Collectors.partitioningBy(c -> c.population() > 1000, Collectors.counting()));

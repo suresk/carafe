@@ -65,6 +65,11 @@ pub struct Vm {
     pub(crate) backtraces: HashMap<Ref, Vec<TraceFrame>>,
     /// How many lambda classes carafe has made, which numbers the next one.
     pub(crate) lambdas: usize,
+    /// The main thread's `Thread` object, once something has asked for it.
+    pub thread: Option<Ref>,
+    /// What the program reads from standard input, and how much it has read.
+    pub stdin: Vec<u8>,
+    pub(crate) stdin_read: usize,
     // @show
 }
 

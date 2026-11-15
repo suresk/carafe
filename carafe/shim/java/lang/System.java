@@ -20,6 +20,7 @@ public final class System {
     static void startup() {
         jdk.internal.misc.VM.saveProperties(new java.util.HashMap<>());
         jdk.internal.access.SharedSecrets.setJavaLangAccess(new LangAccess());
+        in = new In();
     }
 
     /** The system properties: fixed values, the same on every platform. */
@@ -72,6 +73,30 @@ public final class System {
     public static native long nanoTime();
 
     public static native long currentTimeMillis();
+
+    /** Standard input, which startup sets. */
+    public static java.io.InputStream in;
+
+    /**
+     * Standard input as carafe holds it: bytes in the VM, read by one native,
+     * with no file descriptors.
+     */
+    private static final class In extends java.io.InputStream {
+        @Override
+        public int read() {
+            byte[] one = new byte[1];
+            return read(one, 0, 1) == 1 ? one[0] & 0xff : -1;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) {
+            java.util.Objects.checkFromIndexSize(off, len, b.length);
+            return len == 0 ? 0 : read0(b, off, len);
+        }
+
+        /** Copies up to len bytes into b at off; returns how many, or -1 at the end. */
+        private static native int read0(byte[] b, int off, int len);
+    }
     // @show
 }
 // @end

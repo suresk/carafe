@@ -27,6 +27,12 @@ final class LangAccess implements JavaLangAccess {
                        String[] elements, int size) {
         return String.join(prefix, suffix, delimiter, elements, size);
     }
+
+    @Override
+    public int uncheckedDecodeASCII(byte[] src, int srcOff, char[] dst, int dstOff,
+                                    int len) {
+        return String.decodeASCII(src, srcOff, dst, dstOff, len);
+    }
     // @hide
 
     @Override
@@ -259,10 +265,6 @@ final class LangAccess implements JavaLangAccess {
         throw new UnsupportedOperationException("JavaLangAccess.uncheckedInflateBytesToChars");
     }
 
-    @Override
-    public int uncheckedDecodeASCII(byte[] a0, int a1, char[] a2, int a3, int a4) {
-        throw new UnsupportedOperationException("JavaLangAccess.uncheckedDecodeASCII");
-    }
 
     @Override
     public java.io.InputStream initialSystemIn() {

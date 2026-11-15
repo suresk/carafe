@@ -11,6 +11,7 @@ use crate::loader::linkage;
 use crate::mirror;
 use crate::reflection;
 use crate::resolve::external;
+use crate::threads;
 use crate::unsafe_access;
 use crate::value::Value;
 
@@ -74,6 +75,12 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
             exceptions::fill_in_stack_trace
         }
         "java/lang/ClassLoader.registerNatives()V" => lang::nothing,
+        "java/lang/Thread.registerNatives()V" => lang::nothing,
+        "jdk/internal/misc/ScopedMemoryAccess.registerNatives()V" => lang::nothing,
+        "java/lang/Thread.currentThread()Ljava/lang/Thread;" => {
+            threads::current_thread
+        }
+        "java/lang/System$In.read0([BII)I" => threads::read_stdin,
         "java/lang/Class.isHidden()Z" => reflection::is_hidden,
         "java/lang/Class.getEnclosingMethod0()[Ljava/lang/Object;" => {
             reflection::get_enclosing_method
@@ -90,28 +97,27 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/ref/Reference.get0()Ljava/lang/Object;" => lang::reference_get,
         "java/lang/ref/Reference.refersTo0(Ljava/lang/Object;)Z" => lang::refers_to,
         "java/lang/ref/Reference.clear0()V" => lang::reference_clear,
-        "java/lang/Class.forName0(Ljava/lang/String;ZLjava/lang/ClassLoader;Ljava/lang/Class;)\
-         Ljava/lang/Class;" => reflection::for_name,
+        "java/lang/Class.forName0(Ljava/lang/String;ZLjava/lang/ClassLoader;\
+         Ljava/lang/Class;)Ljava/lang/Class;" => reflection::for_name,
         "java/lang/Class.getConstantPool()Ljdk/internal/reflect/ConstantPool;" => {
             reflection::get_constant_pool
         }
-        "java/lang/Class.getDeclaredConstructors0(Z)[Ljava/lang/reflect/Constructor;" => {
+        "java/lang/Class.getDeclaredConstructors0\
+         (Z)[Ljava/lang/reflect/Constructor;" => {
             reflection::get_declared_constructors
         }
-        "jdk/internal/reflect/DirectConstructorHandleAccessor$NativeAccessor.newInstance0\
-         (Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;" => {
-            reflection::new_instance0
-        }
+        "jdk/internal/reflect/DirectConstructorHandleAccessor$NativeAccessor\
+         .newInstance0(Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)\
+         Ljava/lang/Object;" => reflection::new_instance0,
         "java/lang/Class.getDeclaredFields0(Z)[Ljava/lang/reflect/Field;" => {
             reflection::get_declared_fields
         }
         "java/lang/Class.getDeclaredMethods0(Z)[Ljava/lang/reflect/Method;" => {
             reflection::get_declared_methods
         }
-        "jdk/internal/reflect/DirectMethodHandleAccessor$NativeAccessor.invoke0\
-         (Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;" => {
-            reflection::invoke0
-        }
+        "jdk/internal/reflect/DirectMethodHandleAccessor$NativeAccessor\
+         .invoke0(Ljava/lang/reflect/Method;Ljava/lang/Object;[Ljava/lang/Object;)\
+         Ljava/lang/Object;" => reflection::invoke0,
         "jdk/internal/reflect/Reflection.getCallerClass()Ljava/lang/Class;" => {
             reflection::get_caller_class
         }
@@ -120,9 +126,8 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/reflect/Array.newArray(Ljava/lang/Class;I)Ljava/lang/Object;" => {
             mirror::new_array
         }
-        "java/lang/NullPointerException.getExtendedNPEMessage()Ljava/lang/String;" => {
-            |_, _| Ok(Some(Value::Ref(Ref::NULL)))
-        }
+        "java/lang/NullPointerException.getExtendedNPEMessage\
+         ()Ljava/lang/String;" => |_, _| Ok(Some(Value::Ref(Ref::NULL))),
         // @show
         _ => return None,
     })
