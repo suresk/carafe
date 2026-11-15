@@ -1,6 +1,7 @@
 //! `invokedynamic`: bootstrap methods, call sites and string concatenation.
 
 use crate::class::Class;
+use crate::class::Slot;
 use crate::class_file::ClassFile;
 use crate::descriptor::{FieldType, MethodDescriptor};
 use crate::error::{Error, Result};
@@ -9,6 +10,8 @@ use crate::interpreter::Vm;
 use crate::loader::linkage;
 use crate::pool::{Constant, ConstantPool};
 use crate::reader::Reader;
+use crate::records::RecordMethod;
+use crate::switches::Label;
 use crate::value::Value;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -54,6 +57,11 @@ pub enum CallSite {
     /// A lambda: the class carafe made for it, the types of the values it
     /// captures, and its one object if it captures none.
     Lambda { class: Rc<Class>, captures: Vec<FieldType>, instance: Cell<Ref> },
+    /// A record's `toString`, `equals` or `hashCode`: the record class and
+    /// the fields of its components, in order.
+    Record { method: RecordMethod, class: Rc<Class>, components: Vec<Slot> },
+    /// A pattern `switch`: its labels, in `case` order.
+    TypeSwitch { labels: Vec<Label> },
     // @show
 }
 
@@ -86,6 +94,10 @@ impl Vm {
             CallSite::Lambda { class, captures, instance } => {
                 self.new_lambda(class, captures, instance)
             }
+            CallSite::Record { method, class, components } => {
+                self.record_method(*method, class, components)
+            }
+            CallSite::TypeSwitch { labels } => self.type_switch(labels),
             // @show
             CallSite::Concat { pieces, args } => self.concat(pieces, args),
         }
@@ -129,6 +141,13 @@ impl Vm {
             ) => {
                 let (name, _) = pool.name_and_type(name_and_type)?;
                 self.lambda_site(class, name, descriptor, &b.args)
+            }
+            ("java/lang/runtime/ObjectMethods", "bootstrap") => {
+                let (name, _) = pool.name_and_type(name_and_type)?;
+                self.record_site(class, name, &b.args)
+            }
+            ("java/lang/runtime/SwitchBootstraps", "typeSwitch") => {
+                self.type_switch_site(class, &b.args)
             }
             // @show
             (owner, name) => Err(Error::Unsupported(format!(
@@ -197,16 +216,15 @@ fn string(pool: &ConstantPool, index: u16) -> Result<Vec<u16>> {
 
 impl Vm {
     // @listing concat
-    /// Concatenates the pieces, with each argument made a string by the
-    /// `String.valueOf` for its type, as the JDK's own strategy does. The
-    /// arguments stay on the operand stack, as roots, until the end.
+    /// Concatenates the pieces, with each argument made a string by
+    /// `value_of`. The arguments stay on the operand stack, as roots, until
+    /// the end.
     fn concat(&mut self, pieces: &[Piece], args: &[FieldType]) -> Result<()> {
         let at = self.frames.len() - 1;
         let slots: usize = args.iter().map(|t| t.slots()).sum();
         let Some(base) = self.frames[at].stack.len().checked_sub(slots) else {
             return Err(Error::Verify("invokedynamic underflows the stack".into()));
         };
-        let string = self.load("java/lang/String")?;
         let mut units = Vec::new();
         for piece in pieces {
             match *piece {
@@ -215,28 +233,36 @@ impl Vm {
                     let slot =
                         base + args[..n].iter().map(|t| t.slots()).sum::<usize>();
                     let value = self.frames[at].stack[slot];
-                    let descriptor = match &args[n] {
-                        FieldType::Object(_) | FieldType::Array(_) => {
-                            "Ljava/lang/Object;"
-                        }
-                        FieldType::Byte | FieldType::Short => "I",
-                        t if *t == FieldType::Boolean => "Z",
-                        other => &other.descriptor(),
-                    };
-                    let descriptor = format!("({descriptor})Ljava/lang/String;");
-                    let Some(Value::Ref(s)) =
-                        self.invoke(&string, "valueOf", &descriptor, &[value])?
-                    else {
-                        unreachable!("valueOf returns a String")
-                    };
-                    units.extend(self.string_units(s)?);
+                    units.extend(self.value_of(&args[n], value)?);
                 }
             }
         }
-        let frame = &mut self.frames[at];
-        frame.stack.truncate(base);
+        self.frames[at].stack.truncate(base);
         let result = self.new_string(&units)?;
         self.frames[at].push(Value::Ref(result))
+    }
+
+    /// A value of type `ty` as text, made by the JDK's `String.valueOf` for
+    /// the type, as the JDK's own concatenation does: `valueOf(int)` for a
+    /// `byte` or a `short`, and `valueOf(Object)` for any reference.
+    pub(crate) fn value_of(
+        &mut self,
+        ty: &FieldType,
+        value: Value,
+    ) -> Result<Vec<u16>> {
+        let descriptor = match ty {
+            FieldType::Object(_) | FieldType::Array(_) => "Ljava/lang/Object;",
+            FieldType::Byte | FieldType::Short => "I",
+            other => &other.descriptor(),
+        };
+        let descriptor = format!("({descriptor})Ljava/lang/String;");
+        let string = self.load("java/lang/String")?;
+        let Some(Value::Ref(s)) =
+            self.invoke(&string, "valueOf", &descriptor, &[value])?
+        else {
+            unreachable!("valueOf returns a String")
+        };
+        self.string_units(s)
     }
     // @end
 }

@@ -126,6 +126,9 @@ impl Vm {
             None => Class::new(file),
         };
         class.interfaces = interfaces;
+        // @hide
+        crate::switches::check_permitted(&class)?;
+        // @show
         Ok(class)
     }
 
