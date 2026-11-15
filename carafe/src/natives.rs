@@ -48,6 +48,18 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/String.intern()Ljava/lang/String;" => Vm::intern_native,
         "java/lang/Runtime.availableProcessors()I" => |_, _| Ok(Some(Value::Int(1))),
         "java/lang/Object.getClass()Ljava/lang/Class;" => mirror::get_class,
+        "java/lang/Class.initClassName()Ljava/lang/String;" => {
+            mirror::init_class_name
+        }
+        "java/lang/Object.hashCode()I" => mirror::identity_hash,
+        "java/lang/Class.isInstance(Ljava/lang/Object;)Z" => mirror::is_instance,
+        "java/lang/Class.isAssignableFrom(Ljava/lang/Class;)Z" => {
+            mirror::is_assignable_from
+        }
+        "java/lang/Class.getSuperclass()Ljava/lang/Class;" => mirror::get_superclass,
+        "java/lang/System.identityHashCode(Ljava/lang/Object;)I" => {
+            mirror::identity_hash
+        }
         "jdk/internal/misc/CDS.getCDSConfigStatus()I" => lang::zero,
         "jdk/internal/misc/CDS.initializeFromArchive(Ljava/lang/Class;)V" => {
             lang::nothing

@@ -43,7 +43,7 @@ impl Vm {
     }
 
     /// Stores `value` in the instance field `name` of `object`.
-    fn put(
+    pub(crate) fn put(
         &mut self,
         class: &Class,
         object: Ref,

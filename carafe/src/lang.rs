@@ -13,13 +13,7 @@ pub(crate) fn get_primitive_class(
 ) -> Result<Option<Value>> {
     let [Value::Ref(name)] = *args else { unreachable!("checked descriptor") };
     let name = vm.rust_string(name)?;
-    if let Some(&mirror) = vm.primitive_mirrors.get(&name) {
-        return Ok(Some(Value::Ref(mirror)));
-    }
-    let class_class = vm.load("java/lang/Class")?;
-    let mirror = vm.heap.new_object(&class_class);
-    vm.primitive_mirrors.insert(name, mirror);
-    Ok(Some(Value::Ref(mirror)))
+    Ok(Some(Value::Ref(vm.primitive_mirror(&name)?)))
 }
 // @end
 

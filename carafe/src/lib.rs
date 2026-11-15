@@ -69,3 +69,4 @@ pub use challenges::ch11::vtable;
 pub use challenges::ch12::objects_and_arrays;
 pub use challenges::ch13::{conflicting_defaults, illegal_access_message};
 pub use challenges::ch14::{identity_hash_code, native_coverage};
+pub use challenges::ch15::{census, get_interfaces};
