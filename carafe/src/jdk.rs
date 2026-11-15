@@ -77,3 +77,13 @@ impl Jdk {
     }
     // @end
 }
+
+impl Jdk {
+    // @listing jdk-javap-code
+    /// The output of `javap -c -p`: every method's bytecode, disassembled.
+    pub fn javap_code(&self, class: &Path) -> Result<String> {
+        let mut javap = Command::new(self.home.join("bin").join("javap"));
+        self.run(javap.args(["-c", "-p"]).arg(class))
+    }
+    // @end
+}

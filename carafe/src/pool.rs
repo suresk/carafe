@@ -257,21 +257,21 @@ impl ConstantPool {
     // @listing comment
     /// What the entry at `index` leads to, as `javap -v` shows it after `//`:
     /// for a `Methodref`, the class, name and descriptor it names.
-    fn comment(&self, index: u16, c: &Constant) -> Result<String> {
+    pub(crate) fn comment(&self, index: u16, c: &Constant) -> Result<String> {
         Ok(match *c {
             Constant::String { utf8 } => match self.get(utf8)? {
                 c @ (Constant::Utf8(_) | Constant::Utf16(_)) => c.describe().1,
                 other => return Err(wrong(utf8, other, "Utf8")),
             },
-            Constant::Class { name }
-            | Constant::MethodType { descriptor: name }
+            Constant::Class { name } => quote_class(self.utf8(name)?),
+            Constant::MethodType { descriptor: name }
             | Constant::Module { name }
             | Constant::Package { name } => self.utf8(name)?.to_string(),
             Constant::Fieldref { .. }
             | Constant::Methodref { .. }
             | Constant::InterfaceMethodref { .. } => {
                 let m = self.member(index)?;
-                format!("{}.{}", m.class, quote(m.name, m.descriptor))
+                format!("{}.{}", quote_class(m.class), quote(m.name, m.descriptor))
             }
             Constant::NameAndType { .. } => {
                 let (name, descriptor) = self.name_and_type(index)?;
@@ -294,6 +294,14 @@ fn quote(name: &str, descriptor: &str) -> String {
     match name.starts_with('<') {
         true => format!("\"{name}\":{descriptor}"),
         false => format!("{name}:{descriptor}"),
+    }
+}
+
+/// A class name, in quotes if it is an array class's: `"[I"`.
+fn quote_class(name: &str) -> String {
+    match name.starts_with('[') {
+        true => format!("\"{name}\""),
+        false => name.to_string(),
     }
 }
 
