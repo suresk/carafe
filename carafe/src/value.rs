@@ -1,5 +1,7 @@
 //! The values the interpreter computes with.
 
+use crate::heap::Ref;
+
 // @listing value
 /// A value in a local variable or on the operand stack. A `long` or a
 /// `double` fills two slots: the value, then `Top`.
@@ -12,6 +14,10 @@ pub enum Value {
     /// No value: the second slot of a `long` or `double`, or a local
     /// variable that hasn't been assigned (the JVMS's verification type `top`).
     Top,
+    // @hide
+    /// A reference to an object, or `null`.
+    Ref(Ref),
+    // @show
 }
 
 impl Value {

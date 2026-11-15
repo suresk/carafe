@@ -3,6 +3,7 @@
 use crate::bytecode::Instruction;
 use crate::class::Class;
 use crate::error::{Error, Result};
+use crate::heap::Ref;
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -167,6 +168,35 @@ impl Frame {
 
     fn expected(&self, what: &str, found: Value) -> Error {
         verify(self.name(), &format!("expected {what}, found {found:?}"))
+    }
+    // @end
+}
+
+impl Frame {
+    // @listing pop-args
+    /// Pops the arguments of a call, `slots` slots of them, and returns them
+    /// in the order they were pushed.
+    pub fn pop_args(&mut self, slots: usize) -> Result<Vec<Value>> {
+        let mut args = Vec::new();
+        let mut popped = 0;
+        while popped < slots {
+            let arg = self.pop()?;
+            popped += if arg.is_wide() { 2 } else { 1 };
+            args.push(arg);
+        }
+        args.reverse();
+        Ok(args)
+    }
+    // @end
+}
+
+impl Frame {
+    // @listing frame-pop-ref
+    pub fn pop_ref(&mut self) -> Result<Ref> {
+        match self.pop()? {
+            Value::Ref(r) => Ok(r),
+            other => Err(self.expected("a reference", other)),
+        }
     }
     // @end
 }

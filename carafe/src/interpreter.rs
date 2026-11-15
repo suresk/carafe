@@ -6,6 +6,7 @@ use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
+use crate::heap::{Heap, Ref};
 use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
@@ -24,6 +25,8 @@ pub struct Vm {
     pub calls: u64,
     /// The most frames that were ever on the stack at once.
     pub deepest: usize,
+    /// Every object the program has created.
+    pub heap: Heap,
     // @show
 }
 
@@ -155,6 +158,13 @@ impl Vm {
             (LCONST_0..=DCONST_1 | LADD..=LXOR | I2L..=DCMPG, _) => {
                 numeric(frame, i.opcode)?
             }
+            (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
+            (NEW | GETFIELD | PUTFIELD, &Operand::Constant(index)) => {
+                self.object_op(i.opcode, index)?
+            }
+            (INVOKESPECIAL, &Operand::Constant(index)) => {
+                return self.invoke_special(index);
+            }
             (INVOKESTATIC, &Operand::Constant(index)) => {
                 return self.invoke_static(index);
             }
@@ -195,6 +205,15 @@ fn branch(frame: &mut Frame, i: &Instruction) -> Result<Flow> {
         }
         // @hide
         (IRETURN, _) => Flow::Return(Some(narrow_return(frame)?)),
+        (IFNULL | IFNONNULL, &Operand::Target(to)) => {
+            let is_null = frame.pop_ref()? == Ref::NULL;
+            taken(is_null == (i.opcode == IFNULL), to)
+        }
+        (IF_ACMPEQ | IF_ACMPNE, &Operand::Target(to)) => {
+            let b = frame.pop_ref()?;
+            let a = frame.pop_ref()?;
+            taken((a == b) == (i.opcode == IF_ACMPEQ), to)
+        }
         // @show
         (IRETURN..=ARETURN, _) => Flow::Return(Some(frame.pop()?)),
         (RETURN, _) => Flow::Return(None),
@@ -310,14 +329,7 @@ impl Vm {
             let class = "java/lang/IncompatibleClassChangeError";
             return Err(Error::Exception { class, message: Some(m) });
         }
-        let mut args = Vec::new();
-        let mut slots = 0;
-        while slots < callee.arg_slots() {
-            let arg = caller.pop()?;
-            slots += if arg.is_wide() { 2 } else { 1 };
-            args.push(arg);
-        }
-        args.reverse();
+        let args = caller.pop_args(callee.arg_slots())?;
         let frame = Frame::new(class.clone(), method, &args)?;
         self.call(frame)?;
         Ok(Flow::Next)
@@ -351,5 +363,78 @@ fn narrow_return(frame: &mut Frame) -> Result<Value> {
         Some(FieldType::Short) => v as i16 as i32,
         _ => v,
     }))
+}
+// @end
+
+impl Vm {
+    // @listing object-op
+    /// `new`, `getfield` and `putfield`, for the current class's objects.
+    fn object_op(&mut self, opcode: u8, index: u16) -> Result<()> {
+        let frame = self.frames.last_mut().expect("a frame");
+        let class = frame.class.clone();
+        let pool = &class.file.constant_pool;
+        if opcode == NEW {
+            let name = pool.class_name(index)?;
+            if name != class.file.this_class {
+                return Err(Error::Unsupported(format!("new {name}")));
+            }
+            return frame.push(Value::Ref(self.heap.new_object(&class)));
+        }
+        let target = pool.member(index)?;
+        if target.class != class.file.this_class {
+            let m = format!("the field {}.{}", target.class, target.name);
+            return Err(Error::Unsupported(m));
+        }
+        let field = class.field(target.name, target.descriptor)?;
+        if opcode == GETFIELD {
+            let object = non_null(frame.pop_ref()?)?;
+            frame.push(self.heap.read(object.0 + field.offset, &field.ty))
+        } else {
+            let value = frame.pop()?;
+            let object = non_null(frame.pop_ref()?)?;
+            self.heap.write(object.0 + field.offset, &field.ty, value)
+        }
+    }
+    // @end
+
+    // @listing invoke-special
+    /// `invokespecial`, for now only of a constructor of the current class
+    /// or of `Object`.
+    fn invoke_special(&mut self, index: u16) -> Result<Flow> {
+        let caller = self.frames.last_mut().expect("a caller");
+        let class = caller.class.clone();
+        let target = class.file.constant_pool.member(index)?;
+        if (target.class, target.name, target.descriptor)
+            == ("java/lang/Object", "<init>", "()V")
+        {
+            // Object's constructor is empty; Chapter 10 runs the real one.
+            non_null(caller.pop_ref()?)?;
+            return Ok(Flow::Next);
+        }
+        if target.class != class.file.this_class || target.name != "<init>" {
+            let m = format!("invokespecial of {}.{}", target.class, target.name);
+            return Err(Error::Unsupported(m));
+        }
+        let method = class.method(target.name, target.descriptor)?;
+        let args = caller.pop_args(class.file.methods[method].arg_slots())?;
+        let Some(&Value::Ref(this)) = args.first() else {
+            return Err(Error::Verify(format!("{} without an object", target.name)));
+        };
+        non_null(this)?;
+        let frame = Frame::new(class.clone(), method, &args)?;
+        self.call(frame)?;
+        Ok(Flow::Next)
+    }
+    // @end
+}
+
+// @listing non-null
+/// `r`, or a `NullPointerException` if it is `null`.
+fn non_null(r: Ref) -> Result<Ref> {
+    if r == Ref::NULL {
+        let class = "java/lang/NullPointerException";
+        return Err(Error::Exception { class, message: None });
+    }
+    Ok(r)
 }
 // @end
