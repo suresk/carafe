@@ -71,6 +71,15 @@ impl Vm {
     /// `ldc` of a `String` constant: its text, interned.
     pub(crate) fn ldc_string(&mut self, index: u16) -> Result<Ref> {
         let class = self.frames.last().expect("a frame").class.clone();
+        self.string_constant(&class, index)
+    }
+
+    /// The `String` for the constant at `index` in `class`'s pool.
+    pub(crate) fn string_constant(
+        &mut self,
+        class: &Class,
+        index: u16,
+    ) -> Result<Ref> {
         let pool = &class.file.constant_pool;
         let Constant::String { utf8 } = *pool.get(index)? else { unreachable!() };
         let units: Vec<u16> = match pool.get(utf8)? {
@@ -86,6 +95,12 @@ impl Vm {
     /// The text of the `String` at `r`, with any unpaired surrogate replaced
     /// by U+FFFD.
     pub fn rust_string(&self, r: Ref) -> Result<String> {
+        let units = self.string_units(r)?;
+        Ok(char::decode_utf16(units).map(|c| c.unwrap_or('\u{fffd}')).collect())
+    }
+
+    /// The UTF-16 code units of the `String` at `r`.
+    pub fn string_units(&self, r: Ref) -> Result<Vec<u16>> {
         let class = self.heap.class_of(r);
         let field = |name: &str, ty: &str| -> Result<Value> {
             let slot = class.field(name, ty)?;
@@ -105,11 +120,8 @@ impl Vm {
             bytes.push(b as u8);
         }
         Ok(match coder {
-            LATIN1 => bytes.iter().map(|&b| b as char).collect(),
-            _ => {
-                let units = bytes.chunks(2).map(|p| u16::from_le_bytes([p[0], p[1]]));
-                char::decode_utf16(units).map(|c| c.unwrap_or('\u{fffd}')).collect()
-            }
+            LATIN1 => bytes.iter().map(|&b| u16::from(b)).collect(),
+            _ => bytes.chunks(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect(),
         })
     }
     // @end
@@ -121,3 +133,19 @@ pub(crate) fn is_string(class: &Class, index: u16) -> bool {
     matches!(class.file.constant_pool.get(index), Ok(Constant::String { .. }))
 }
 // @end
+
+impl Vm {
+    // @listing string-intern
+    /// `String.intern()`: the interned string with this one's contents, which
+    /// is this one if no string with them has been interned.
+    pub(crate) fn intern_native(
+        vm: &mut Vm,
+        args: &[Value],
+    ) -> Result<Option<Value>> {
+        let [Value::Ref(this)] = *args else { unreachable!("checked descriptor") };
+        let units = vm.string_units(this)?;
+        let interned = *vm.strings.entry(units).or_insert(this);
+        Ok(Some(Value::Ref(interned)))
+    }
+    // @end
+}

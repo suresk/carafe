@@ -1,7 +1,7 @@
 //! `java.lang.Class` objects.
 
 use crate::class::Class;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::heap::Ref;
 use crate::interpreter::Vm;
 use crate::pool::Constant;
@@ -19,6 +19,9 @@ impl Vm {
         let class_class = self.load("java/lang/Class")?;
         let mirror = self.heap.new_object(&class_class);
         class.mirror.set(mirror);
+        // @hide
+        self.mirror_classes.insert(mirror, class.clone());
+        // @show
         Ok(mirror)
     }
 
@@ -28,6 +31,20 @@ impl Vm {
         let name = from.file.constant_pool.class_name(index)?;
         let class = self.resolve_class(&from, name)?;
         self.mirror(&class)
+    }
+    // @end
+}
+
+impl Vm {
+    // @listing class-of-mirror
+    /// The class a `java.lang.Class` object stands for.
+    pub fn class_of_mirror(&self, mirror: Ref) -> Result<Rc<Class>> {
+        match self.mirror_classes.get(&mirror) {
+            Some(class) => Ok(class.clone()),
+            None => {
+                Err(Error::Unsupported("the class of a primitive type".to_string()))
+            }
+        }
     }
     // @end
 }
@@ -51,5 +68,14 @@ pub(crate) fn desired_assertion_status(
     _: &[Value],
 ) -> Result<Option<Value>> {
     Ok(Some(Value::Int(0)))
+}
+// @end
+
+// @listing get-class
+/// `Object.getClass()`: the mirror of the object's class, or of an array's.
+pub(crate) fn get_class(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(this)] = *args else { unreachable!("checked descriptor") };
+    let class = vm.class_of(this)?;
+    Ok(Some(Value::Ref(vm.mirror(&class)?)))
 }
 // @end

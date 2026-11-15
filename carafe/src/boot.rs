@@ -32,6 +32,10 @@ impl Vm {
 
     /// Runs `class`'s `main` method with no arguments, as `java class` does.
     pub fn run_main(&mut self, class: &str) -> Result<()> {
+        // @hide
+        let system = self.load("java/lang/System")?;
+        self.invoke(&system, "startup", "()V", &[])?;
+        // @show
         let class = self.load(class)?;
         let string = FieldType::Object("java/lang/String".to_string());
         let args = self.heap.new_array(&string, 0)?;

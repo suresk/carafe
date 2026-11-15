@@ -4,9 +4,11 @@ use crate::arrays;
 use crate::error::Result;
 use crate::frame::Frame;
 use crate::interpreter::Vm;
+use crate::lang;
 use crate::loader::linkage;
 use crate::mirror;
 use crate::resolve::external;
+use crate::unsafe_access;
 use crate::value::Value;
 
 // @listing native-fn
@@ -16,6 +18,13 @@ pub type Native = fn(&mut Vm, &[Value]) -> Result<Option<Value>>;
 
 /// The native method `class.name` with this descriptor, if carafe has it.
 fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
+    // @hide
+    if class == "jdk/internal/misc/Unsafe"
+        && let Some(native) = unsafe_access::find(name)
+    {
+        return Some(native);
+    }
+    // @show
     Some(match format!("{class}.{name}{descriptor}").as_str() {
         "java/io/PrintStream.write0(ILjava/lang/String;)V" => write0,
         // @hide
@@ -26,6 +35,28 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/Class.registerNatives()V" => mirror::register_natives,
         "java/lang/Class.desiredAssertionStatus0(Ljava/lang/Class;)Z" => {
             mirror::desired_assertion_status
+        }
+        "java/lang/Class.getPrimitiveClass(Ljava/lang/String;)Ljava/lang/Class;" => {
+            lang::get_primitive_class
+        }
+        "java/lang/Float.floatToRawIntBits(F)I" => lang::float_to_bits,
+        "java/lang/Float.intBitsToFloat(I)F" => lang::bits_to_float,
+        "java/lang/Double.doubleToRawLongBits(D)J" => lang::double_to_bits,
+        "java/lang/Double.longBitsToDouble(J)D" => lang::bits_to_double,
+        "jdk/internal/misc/VM.initialize()V" => lang::nothing,
+        "java/lang/Runtime.maxMemory()J" => lang::max_memory,
+        "java/lang/String.intern()Ljava/lang/String;" => Vm::intern_native,
+        "java/lang/Runtime.availableProcessors()I" => |_, _| Ok(Some(Value::Int(1))),
+        "java/lang/Object.getClass()Ljava/lang/Class;" => mirror::get_class,
+        "jdk/internal/misc/CDS.getCDSConfigStatus()I" => lang::zero,
+        "jdk/internal/misc/CDS.initializeFromArchive(Ljava/lang/Class;)V" => {
+            lang::nothing
+        }
+        "jdk/internal/misc/CDS.getRandomSeedForDumping()J" => {
+            |_, _| Ok(Some(Value::Long(0)))
+        }
+        "java/lang/Throwable.fillInStackTrace(I)Ljava/lang/Throwable;" => {
+            |_, args| Ok(Some(args[0]))
         }
         // @show
         _ => return None,
@@ -66,5 +97,12 @@ fn write0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
         _ => vm.stdout.extend_from_slice(text.as_bytes()),
     }
     Ok(None)
+}
+// @end
+
+// @listing implemented
+/// Whether carafe has the native method `class.name` with `descriptor`.
+pub fn implemented(class: &str, name: &str, descriptor: &str) -> bool {
+    find(class, name, descriptor).is_some()
 }
 // @end

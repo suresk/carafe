@@ -40,7 +40,11 @@ use carafe::initialized;
 #[test]
 fn what_hello_initializes() {
     let mut vm = boot("Hello");
-    vm.run_main("Hello").unwrap();
+    let hello = vm.load("Hello").unwrap();
+    let string = carafe::FieldType::Object("java/lang/String".into());
+    let args = vm.heap.new_array(&string, 0).unwrap();
+    let args = [carafe::Value::Ref(args)];
+    vm.invoke(&hello, "main", "([Ljava/lang/String;)V", &args).unwrap();
     let names = initialized(&mut vm).unwrap();
     assert_eq!(
         names,

@@ -18,7 +18,7 @@ use crate::resolve::{
 };
 use crate::strings::is_string;
 use crate::value::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 // @listing vm
@@ -53,6 +53,10 @@ pub struct Vm {
     /// How many directories at the start of the class path are the boot
     /// class path, which `Vm::boot` sets.
     pub boot_dirs: usize,
+    /// The `Class` objects of the primitive types, by name: `int`, `void`.
+    pub(crate) primitive_mirrors: BTreeMap<String, Ref>,
+    /// The class each mirror stands for, by the mirror's reference.
+    pub(crate) mirror_classes: HashMap<Ref, Rc<Class>>,
     // @show
 }
 
@@ -209,6 +213,10 @@ impl Vm {
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
             (NEWARRAY | ANEWARRAY | MULTIANEWARRAY | ARRAYLENGTH, _)
             | (IALOAD..=SALOAD | IASTORE..=SASTORE, _) => self.array_op(i)?,
+            (MONITORENTER | MONITOREXIT, _) => {
+                // One thread: every monitor is free to enter (JVM4 adds threads).
+                non_null(frame.pop_ref()?)?;
+            }
             (CHECKCAST | INSTANCEOF, &Operand::Constant(index)) => {
                 self.type_check(i.opcode, index)?
             }

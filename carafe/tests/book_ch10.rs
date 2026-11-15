@@ -92,7 +92,10 @@ fn an_array_header() {
 fn hello_world() {
     // @listing hello-test
     let mut vm = boot("Hello");
-    vm.run_main("Hello").unwrap();
+    let hello = vm.load("Hello").unwrap();
+    let args =
+        vm.heap.new_array(&FieldType::Object("java/lang/String".into()), 0).unwrap();
+    vm.invoke(&hello, "main", "([Ljava/lang/String;)V", &[Value::Ref(args)]).unwrap();
     assert_eq!(String::from_utf8(vm.stdout.clone()).unwrap(), "Hello, world!\n");
     assert_eq!(
         vm.loaded,

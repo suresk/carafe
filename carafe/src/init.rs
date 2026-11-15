@@ -63,6 +63,11 @@ impl Vm {
                     Constant::Long(v) => Value::Long(*v),
                     Constant::Float(v) => Value::Float(*v),
                     Constant::Double(v) => Value::Double(*v),
+                    // @hide
+                    Constant::String { .. } => {
+                        Value::Ref(self.string_constant(class, index)?)
+                    }
+                    // @show
                     other => {
                         return Err(Error::Unsupported(format!(
                             "a constant {other:?}"
