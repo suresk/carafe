@@ -4,10 +4,14 @@
 //! your own crate. See `check.rs`.
 //! `cargo xtask pool Hello.class` prints a class file's version and constant pool.
 //! `cargo xtask code Hello.class` prints the bytecode of each method.
+//! `cargo xtask run <dir> Hello` runs `Hello.main` on carafe, with `<dir>` as the
+//! class path after the JDK's classes.
 
 mod check;
 
-use carafe::ClassFile;
+use carafe::{ClassFile, Jdk, Vm};
+use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -16,6 +20,7 @@ fn main() -> ExitCode {
         ["check", ref rest @ ..] => check::main(rest),
         ["pool", path] => report(path, pool(path)),
         ["code", path] => report(path, code(path)),
+        ["run", dir, class] => run(dir, class),
         _ => {
             eprintln!(
                 "usage: cargo xtask check <chapter | chapter.challenge | all> \
@@ -23,6 +28,7 @@ fn main() -> ExitCode {
             );
             eprintln!("       cargo xtask pool <file.class>");
             eprintln!("       cargo xtask code <file.class>");
+            eprintln!("       cargo xtask run <class directory> <main class>");
             ExitCode::from(2)
         }
     }
@@ -63,3 +69,29 @@ fn report(path: &str, result: Result<(), Box<dyn std::error::Error>>) -> ExitCod
         }
     }
 }
+
+// @listing run
+/// Runs `class`'s `main` on carafe, prints what it wrote, and reports an
+/// uncaught exception as `java` does.
+fn run(dir: &str, class: &str) -> ExitCode {
+    let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/carafe");
+    let booted = Jdk::find().and_then(|jdk| Vm::boot(&jdk, &work, Path::new(dir)));
+    let mut vm = match booted {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = vm.run_main(class);
+    std::io::stdout().write_all(&vm.stdout).expect("stdout");
+    std::io::stderr().write_all(&vm.stderr).expect("stderr");
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Exception in thread \"main\" {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+// @end

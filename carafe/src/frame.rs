@@ -3,6 +3,7 @@
 use crate::bytecode::Instruction;
 use crate::class::Class;
 use crate::error::{Error, Result};
+use crate::flags::AccessFlags;
 use crate::heap::Ref;
 use crate::value::Value;
 use std::rc::Rc;
@@ -28,6 +29,11 @@ impl Frame {
     /// A frame for calling method `method` of `class`, with `args` in the
     /// first local variables.
     pub fn new(class: Rc<Class>, method: usize, args: &[Value]) -> Result<Frame> {
+        // @hide
+        if class.file.methods[method].access_flags.has(AccessFlags::NATIVE) {
+            return Ok(Frame::native(class, method, args));
+        }
+        // @show
         let code = class.instructions(method)?;
         let m = &class.file.methods[method];
         let attribute = m.code.as_ref().expect("instructions() found code");
@@ -197,6 +203,43 @@ impl Frame {
             Value::Ref(r) => Ok(r),
             other => Err(self.expected("a reference", other)),
         }
+    }
+    // @end
+}
+
+impl Frame {
+    // @listing frame-native
+    /// A frame for a native method: no code, and its arguments as locals,
+    /// for the native to read.
+    fn native(class: Rc<Class>, method: usize, args: &[Value]) -> Frame {
+        let mut locals = Vec::new();
+        for &arg in args {
+            locals.push(arg);
+            if arg.is_wide() {
+                locals.push(Value::Top);
+            }
+        }
+        let code = Rc::from([]);
+        Frame {
+            class,
+            method,
+            code,
+            next: 0,
+            locals,
+            stack: Vec::new(),
+            max_stack: 0,
+        }
+    }
+
+    /// Whether this is a frame for a native method.
+    pub fn is_native(&self) -> bool {
+        self.class.file.methods[self.method].access_flags.has(AccessFlags::NATIVE)
+    }
+
+    /// The arguments of a call, one value each: the locals without the
+    /// second halves of `long`s and `double`s.
+    pub fn args(&self) -> Vec<Value> {
+        self.locals.iter().copied().filter(|v| *v != Value::Top).collect()
     }
     // @end
 }

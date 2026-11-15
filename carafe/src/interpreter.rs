@@ -12,8 +12,9 @@ use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
 use crate::resolve::{dotted, external};
+use crate::strings::is_string;
 use crate::value::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 // @listing vm
@@ -38,6 +39,13 @@ pub struct Vm {
     pub loaded: Vec<String>,
     /// The classes whose loading has started and not ended.
     pub(crate) loading: Vec<String>,
+    /// The interned strings, by their UTF-16 code units.
+    pub(crate) strings: HashMap<Vec<u16>, Ref>,
+    /// What the program has written to file descriptors 1 and 2.
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// The native methods called so far, as `class.name` + descriptor.
+    pub natives: BTreeSet<String>,
     // @show
 }
 
@@ -133,6 +141,14 @@ impl Vm {
             (BIPUSH | SIPUSH, &Operand::Value(v)) => {
                 frame.push(Value::Int(v.into()))?
             }
+            // @hide
+            (LDC | LDC_W, &Operand::Constant(index))
+                if is_string(&frame.class, index) =>
+            {
+                let string = self.ldc_string(index)?;
+                self.frames.last_mut().expect("a frame").push(Value::Ref(string))?;
+            }
+            // @show
             (LDC | LDC_W | LDC2_W, &Operand::Constant(index)) => {
                 let value = constant(&frame.class, index)?;
                 frame.push(value)?;
@@ -171,6 +187,9 @@ impl Vm {
                 frame.push(Value::Int(a.wrapping_neg()))?;
             }
             // @hide
+            (INVOKEVIRTUAL, &Operand::Constant(index)) => {
+                return self.invoke_virtual(index);
+            }
             (LCONST_0..=DCONST_1 | LADD..=LXOR | I2L..=DCMPG, _) => {
                 numeric(frame, i.opcode)?
             }
@@ -359,6 +378,12 @@ impl Vm {
             let class = "java/lang/StackOverflowError";
             return Err(Error::Exception { class, message: None });
         }
+        // @hide
+        if frame.is_native() {
+            self.calls += 1;
+            return self.call_native(frame);
+        }
+        // @show
         self.frames.push(frame);
         self.calls += 1;
         self.deepest = self.deepest.max(self.frames.len());
@@ -463,5 +488,61 @@ fn non_null(r: Ref) -> Result<Ref> {
         return Err(Error::Exception { class, message: None });
     }
     Ok(r)
+}
+// @end
+
+impl Vm {
+    // @listing invoke-virtual
+    /// `invokevirtual`: resolves the method, then selects the one to run by
+    /// the class of the object it is called on (JVMS 5.4.6).
+    fn invoke_virtual(&mut self, index: u16) -> Result<Flow> {
+        let from = self.frames.last().expect("a caller").class.clone();
+        let (class, method) = self.resolve_method(&from, index)?;
+        let resolved = &class.file.methods[method];
+        if resolved.access_flags.has(AccessFlags::STATIC) {
+            let name = external(&class.file.this_class, &resolved.name, &resolved.ty);
+            let m = format!("Expecting non-static method '{name}'");
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
+        }
+        let caller = self.frames.last_mut().expect("a caller");
+        let args = caller.pop_args(resolved.arg_slots())?;
+        let Some(&Value::Ref(this)) = args.first() else {
+            return Err(Error::Verify(format!(
+                "{} without an object",
+                resolved.name
+            )));
+        };
+        let this = non_null(this)?;
+        if self.heap.is_array(this) {
+            return Err(Error::Unsupported(format!("{} of an array", resolved.name)));
+        }
+        let receiver = self.heap.class_of(this).clone();
+        let (class, method) = select(&receiver, &resolved.name, &resolved.descriptor)
+            .unwrap_or((class.clone(), method));
+        self.call(Frame::new(class, method, &args)?)?;
+        Ok(Flow::Next)
+    }
+    // @end
+}
+
+// @listing select
+/// The method that overrides `name` with `descriptor` for an object of class
+/// `receiver`: the first non-static one found in the receiver's class or its
+/// superclasses. Chapter 11 completes the JVMS's rules.
+fn select(
+    receiver: &Rc<Class>,
+    name: &str,
+    descriptor: &str,
+) -> Option<(Rc<Class>, usize)> {
+    let mut class = Some(receiver.clone());
+    while let Some(c) = class {
+        if let Ok(method) = c.method(name, descriptor)
+            && !c.file.methods[method].access_flags.has(AccessFlags::STATIC)
+        {
+            return Some((c, method));
+        }
+        class = c.superclass.clone();
+    }
+    None
 }
 // @end

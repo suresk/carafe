@@ -24,6 +24,12 @@ impl Ref {
 pub struct Heap {
     bytes: Vec<u8>,
     classes: Vec<Rc<Class>>,
+    // @hide
+    /// The element types of arrays, which an array's header names.
+    element_types: Vec<FieldType>,
+    /// References that Rust code is holding across an allocation (Section 10.5).
+    pub roots: Vec<Ref>,
+    // @show
 }
 
 /// The size of an object's header, in bytes.
@@ -32,7 +38,14 @@ pub const HEADER: u32 = 8;
 impl Default for Heap {
     fn default() -> Heap {
         // The first 8 bytes are never an object, so that offset 0 can be null.
-        Heap { bytes: vec![0; 8], classes: Vec::new() }
+        Heap {
+            bytes: vec![0; 8],
+            classes: Vec::new(),
+            // @hide
+            element_types: Vec::new(),
+            roots: Vec::new(),
+            // @show
+        }
     }
 }
 // @end
@@ -145,3 +158,75 @@ pub fn size_of(ty: &FieldType) -> u32 {
     }
 }
 // @end
+
+// @listing array-header
+/// The bit that marks an array in the first word of a header, whose other
+/// bits are then the index of the array's element type.
+pub const ARRAY: u32 = 1 << 31;
+
+/// The size of an array's header: the type, the identity hash, the length,
+/// and 4 bytes that put the elements of a `long[]` on an 8-byte boundary.
+pub const ARRAY_HEADER: u32 = 16;
+// @end
+
+impl Heap {
+    // @listing new-array
+    /// Allocates an array of `length` elements of type `element`, all zero.
+    pub fn new_array(&mut self, element: &FieldType, length: u32) -> Result<Ref> {
+        let index = match self.element_types.iter().position(|t| t == element) {
+            Some(index) => index,
+            None => {
+                self.element_types.push(element.clone());
+                self.element_types.len() - 1
+            }
+        };
+        let size =
+            u64::from(ARRAY_HEADER) + u64::from(length) * u64::from(size_of(element));
+        let at = self.bytes.len();
+        let end = at as u64 + size.next_multiple_of(8);
+        if end > u64::from(u32::MAX) {
+            let class = "java/lang/OutOfMemoryError";
+            return Err(Error::Exception {
+                class,
+                message: Some("Java heap space".into()),
+            });
+        }
+        self.bytes.resize(end as usize, 0);
+        let r = Ref(at as u32);
+        self.put_u32(at, ARRAY | index as u32);
+        self.put_u32(at + 4, r.0);
+        self.put_u32(at + 8, length);
+        Ok(r)
+    }
+
+    /// Whether the object at `r` is an array.
+    pub fn is_array(&self, r: Ref) -> bool {
+        self.u32_at(r.0 as usize) & ARRAY != 0
+    }
+
+    /// The length of the array at `r`.
+    pub fn array_length(&self, r: Ref) -> u32 {
+        self.u32_at(r.0 as usize + 8)
+    }
+
+    /// The type of the elements of the array at `r`.
+    pub fn element_type(&self, r: Ref) -> &FieldType {
+        &self.element_types[(self.u32_at(r.0 as usize) & !ARRAY) as usize]
+    }
+
+    /// The offset of element `index` of the array at `r`, if it has one.
+    pub fn element(&self, r: Ref, index: i32) -> Result<u32> {
+        let length = self.array_length(r);
+        match u32::try_from(index) {
+            Ok(i) if i < length => {
+                Ok(r.0 + ARRAY_HEADER + i * size_of(self.element_type(r)))
+            }
+            _ => {
+                let m = format!("Index {index} out of bounds for length {length}");
+                let class = "java/lang/ArrayIndexOutOfBoundsException";
+                Err(Error::Exception { class, message: Some(m) })
+            }
+        }
+    }
+    // @end
+}

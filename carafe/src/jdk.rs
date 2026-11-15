@@ -113,3 +113,71 @@ impl Jdk {
     }
     // @end
 }
+
+// @listing jdk-java-base
+impl Jdk {
+    /// The class files of the JDK's `java.base` module, extracted once into
+    /// `work/java.base` with `jimage`.
+    pub fn java_base(&self, work: &Path) -> Result<PathBuf> {
+        let dir = work.join("java.base");
+        if !dir.join("java/lang/Object.class").is_file() {
+            // Extract beside it, then rename, so that concurrent tests never
+            // see a half-extracted directory.
+            let scratch = work.join(format!("jimage-{}", std::process::id()));
+            let mut jimage = Command::new(self.home.join("bin").join("jimage"));
+            jimage.args(["extract", "--include", "regex:/java.base/.*", "--dir"]);
+            self.run(
+                jimage.arg(&scratch).arg(self.home.join("lib").join("modules")),
+            )?;
+            if fs::rename(scratch.join("java.base"), &dir).is_err() && !dir.is_dir() {
+                return Err(Error::Jdk(format!(
+                    "could not create {}",
+                    dir.display()
+                )));
+            }
+            let _ = fs::remove_dir_all(&scratch);
+        }
+        Ok(dir)
+    }
+
+    /// The shims in `sources` (`java/lang/System.java` and the rest),
+    /// compiled into `java.base`'s packages in a directory under `work`
+    /// named after their contents.
+    pub fn shims(&self, sources: &Path, work: &Path) -> Result<PathBuf> {
+        let files = java_files(sources)?;
+        let mut hasher = std::hash::DefaultHasher::new();
+        for file in &files {
+            std::hash::Hash::hash(&fs::read(file)?, &mut hasher);
+        }
+        let dir =
+            work.join(format!("shims-{:016x}", std::hash::Hasher::finish(&hasher)));
+        if !dir.is_dir() {
+            let scratch = work.join(format!("shims-{}", std::process::id()));
+            let mut javac = Command::new(self.home.join("bin").join("javac"));
+            javac
+                .arg("--patch-module")
+                .arg(format!("java.base={}", sources.display()));
+            self.run(javac.arg("-d").arg(&scratch).args(&files))?;
+            if fs::rename(&scratch, &dir).is_err() {
+                let _ = fs::remove_dir_all(&scratch); // another test got there first
+            }
+        }
+        Ok(dir)
+    }
+}
+
+/// The `.java` files under `dir`, in a fixed order.
+fn java_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            files.extend(java_files(&path)?);
+        } else if path.extension().is_some_and(|e| e == "java") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+// @end

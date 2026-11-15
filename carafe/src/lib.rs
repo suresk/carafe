@@ -1,6 +1,7 @@
 //! carafe: the Java virtual machine you build in *Build a JVM in Rust*.
 
 mod attribute;
+mod boot;
 mod bytecode;
 mod challenges;
 mod class;
@@ -16,15 +17,18 @@ mod interpreter;
 mod jdk;
 mod loader;
 mod member;
+mod natives;
 mod numeric;
 pub mod opcode;
 mod pool;
 mod reader;
 mod resolve;
+mod strings;
 mod utf8;
 mod value;
 
 pub use attribute::{Attribute, Code, Handler};
+pub use boot::SHIMS;
 pub use bytecode::{Instruction, Operand};
 pub use class::{Class, Layout, Slot, State};
 pub use class_file::{ClassFile, MAGIC, MAX_MAJOR, MIN_MAJOR};
@@ -32,13 +36,14 @@ pub use descriptor::{FieldType, MethodDescriptor};
 pub use error::{Error, Result};
 pub use flags::{AccessFlags, Flagged};
 pub use frame::Frame;
-pub use heap::{HEADER, Heap, Ref, size_of};
+pub use heap::{ARRAY, ARRAY_HEADER, HEADER, Heap, Ref, size_of};
 pub use interpreter::{MAX_FRAMES, Vm};
 pub use jdk::{JDK_VERSION, Jdk};
 pub use loader::ClassPath;
 pub use member::{Field, Method};
 pub use pool::{Constant, ConstantPool, MemberRef};
 pub use reader::Reader;
+pub use strings::{LATIN1, UTF16};
 pub use utf8::decode_modified_utf8;
 pub use value::Value;
 
@@ -53,3 +58,4 @@ pub use challenges::ch06::{f2i_by_hand, float_comparisons};
 pub use challenges::ch07::{objects, packed_layout};
 pub use challenges::ch08::{nestmates, references};
 pub use challenges::ch09::{init_cycles, static_values};
+pub use challenges::ch10::{initialized, java_hash};
