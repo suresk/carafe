@@ -5,8 +5,9 @@ use crate::class_file::ClassFile;
 use crate::descriptor::FieldType;
 use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
-use crate::heap::{HEADER, size_of};
-use std::cell::OnceCell;
+use crate::heap::{HEADER, Ref, size_of};
+use crate::value::Value;
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 // @listing class
@@ -23,6 +24,10 @@ pub struct Class {
     pub superclass: Option<Rc<Class>>,
     /// The direct superinterfaces.
     pub interfaces: Vec<Rc<Class>>,
+    /// How far initialization has got (JVMS 5.5).
+    pub state: Cell<State>,
+    /// The values of the static fields, in the order the class declares them.
+    pub statics: RefCell<Vec<Value>>,
     // @show
 }
 
@@ -31,6 +36,9 @@ impl Class {
         let code = file.methods.iter().map(|_| OnceCell::new()).collect();
         // @hide
         let layout = Layout::new(&file, &Layout::OBJECT);
+        let static_fields =
+            file.fields.iter().filter(|f| f.access_flags.has(AccessFlags::STATIC));
+        let statics = static_fields.map(|f| zero(&f.ty)).collect();
         // @show
         Class {
             file,
@@ -39,6 +47,8 @@ impl Class {
             layout,
             superclass: None,
             interfaces: Vec::new(),
+            state: Cell::new(State::Uninitialized),
+            statics: RefCell::new(statics),
             // @show
         }
     }
@@ -141,6 +151,62 @@ impl Class {
             class: "java/lang/NoSuchFieldError",
             message: Some(name.to_string()),
         })
+    }
+    // @end
+}
+
+// @listing state
+/// The initialization state of a class, a single-threaded version of the
+/// states of JVMS 5.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Uninitialized,
+    /// The initializer is running; requests to initialize return at once.
+    InProgress,
+    Initialized,
+    /// The initializer threw; the class can never be used.
+    Erroneous,
+}
+// @end
+
+// @listing zero
+/// The value a field of type `ty` has before anything stores to it.
+pub fn zero(ty: &FieldType) -> Value {
+    match ty {
+        FieldType::Long => Value::Long(0),
+        FieldType::Float => Value::Float(0.0),
+        FieldType::Double => Value::Double(0.0),
+        FieldType::Object(_) | FieldType::Array(_) => Value::Ref(Ref::NULL),
+        _ => Value::Int(0), // int, and the narrow types
+    }
+}
+
+/// `value`, converted for storing in a variable of type `ty`: narrowed if
+/// `ty` is narrower than `int`, and refused if it is the wrong kind.
+pub fn coerce(ty: &FieldType, value: Value) -> Result<Value> {
+    Ok(match (ty, value) {
+        (FieldType::Boolean, Value::Int(v)) => Value::Int(v & 1),
+        (FieldType::Byte, Value::Int(v)) => Value::Int(v as i8 as i32),
+        (FieldType::Char, Value::Int(v)) => Value::Int(v as u16 as i32),
+        (FieldType::Short, Value::Int(v)) => Value::Int(v as i16 as i32),
+        (FieldType::Int, Value::Int(_))
+        | (FieldType::Long, Value::Long(_))
+        | (FieldType::Float, Value::Float(_))
+        | (FieldType::Double, Value::Double(_))
+        | (FieldType::Object(_) | FieldType::Array(_), Value::Ref(_)) => value,
+        _ => return Err(Error::Verify(format!("storing {value:?} as {ty}"))),
+    })
+}
+// @end
+
+impl Class {
+    // @listing static-slot
+    /// The index in `statics` of the static field with this name and
+    /// descriptor, which the class must declare.
+    pub fn static_slot(&self, name: &str, descriptor: &str) -> Option<usize> {
+        let fields = self.file.fields.iter();
+        let mut statics = fields.filter(|f| f.access_flags.has(AccessFlags::STATIC));
+        statics.position(|f| f.name == name && f.descriptor == descriptor)
     }
     // @end
 }

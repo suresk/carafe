@@ -70,27 +70,26 @@ public class Numbers {
     static long d2l(double x) { return (long) x; }
     static float d2f(double x) { return (float) x; }
 
-    // The rest runs only on HotSpot: it prints each call and its result,
-    // with float and double values as their raw bits.
-
-    static final int[] INTS = {0, -1, 300, 65535, 70000, 16777217, Integer.MIN_VALUE,
-        Integer.MAX_VALUE};
-    static final long[] LONGS = {0, -1, 5, -7, 65, 1L << 40, 9007199254740993L,
-        Long.MIN_VALUE, Long.MAX_VALUE};
-    static final float[] FLOATS = {0f, -0f, 1.5f, -2.5f, 5.5f, 1e10f, -1e10f, 3e38f,
-        1.4e-45f, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY};
-    static final double[] DOUBLES = {0d, -0d, 0.1, -2.9, 5.5, 1e10, -1e300, 1e300,
-        3.4028235677973366e38, 4.9e-324, Double.NaN, Double.POSITIVE_INFINITY,
-        Double.NEGATIVE_INFINITY};
-
     static String i(int x) { return "I:" + x; }
     static String j(long x) { return "J:" + x; }
     static String f(float x) { return "F:" + Float.floatToRawIntBits(x); }
     static String d(double x) { return "D:" + Double.doubleToRawLongBits(x); }
 
+    // Runs only on HotSpot: prints each call and its result, with float and
+    // double values as their raw bits.
     public static void main(String[] args) {
-        for (long a : LONGS) {
-            for (long b : LONGS) {
+        int[] ints = {0, -1, 300, 65535, 70000, 16777217, Integer.MIN_VALUE,
+            Integer.MAX_VALUE};
+        long[] longs = {0, -1, 5, -7, 65, 1L << 40, 9007199254740993L,
+            Long.MIN_VALUE, Long.MAX_VALUE};
+        float[] floats = {0f, -0f, 1.5f, -2.5f, 5.5f, 1e10f, -1e10f, 3e38f,
+            1.4e-45f, Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY};
+        double[] doubles = {0d, -0d, 0.1, -2.9, 5.5, 1e10, -1e300, 1e300,
+            3.4028235677973366e38, 4.9e-324, Double.NaN, Double.POSITIVE_INFINITY,
+            Double.NEGATIVE_INFINITY};
+
+        for (long a : longs) {
+            for (long b : longs) {
                 for (int op = 0; op <= 11; op++) {
                     if ((op == 3 || op == 4) && b == 0) {
                         continue;
@@ -105,8 +104,8 @@ public class Numbers {
             System.out.println("l2f (J)F " + j(a) + " = " + f(l2f(a)));
             System.out.println("l2d (J)D " + j(a) + " = " + d(l2d(a)));
         }
-        for (float a : FLOATS) {
-            for (float b : FLOATS) {
+        for (float a : floats) {
+            for (float b : floats) {
                 for (int op = 0; op <= 5; op++) {
                     System.out.println("floats (FFI)F " + f(a) + " " + f(b) + " " + i(op)
                         + " = " + f(floats(a, b, op)));
@@ -118,8 +117,8 @@ public class Numbers {
             System.out.println("f2l (F)J " + f(a) + " = " + j(f2l(a)));
             System.out.println("f2d (F)D " + f(a) + " = " + d(f2d(a)));
         }
-        for (double a : DOUBLES) {
-            for (double b : DOUBLES) {
+        for (double a : doubles) {
+            for (double b : doubles) {
                 for (int op = 0; op <= 5; op++) {
                     System.out.println("doubles (DDI)D " + d(a) + " " + d(b) + " " + i(op)
                         + " = " + d(doubles(a, b, op)));
@@ -131,7 +130,7 @@ public class Numbers {
             System.out.println("d2l (D)J " + d(a) + " = " + j(d2l(a)));
             System.out.println("d2f (D)F " + d(a) + " = " + f(d2f(a)));
         }
-        for (int a : INTS) {
+        for (int a : ints) {
             System.out.println("i2l (I)J " + i(a) + " = " + j(i2l(a)));
             System.out.println("i2f (I)F " + i(a) + " = " + f(i2f(a)));
             System.out.println("i2d (I)D " + i(a) + " = " + d(i2d(a)));

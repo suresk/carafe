@@ -21,7 +21,7 @@ use std::rc::Rc;
 /// progress, and a count of the instructions executed so far.
 #[derive(Default)]
 pub struct Vm {
-    frames: Vec<Frame>,
+    pub(crate) frames: Vec<Frame>,
     pub executed: u64,
     // @hide
     /// The number of calls made by `invoke` instructions.
@@ -73,6 +73,7 @@ impl Vm {
         // @hide
         let name = class.file.this_class.clone();
         self.classes.entry(name).or_insert_with(|| class.clone());
+        self.initialize(class)?;
         // @show
         let depth = self.frames.len();
         self.frames.push(Frame::new(class.clone(), method, args)?);
@@ -86,7 +87,7 @@ impl Vm {
 impl Vm {
     // @listing run
     /// Executes instructions until the frame at `depth` returns.
-    fn run(&mut self, depth: usize) -> Result<Option<Value>> {
+    pub(crate) fn run(&mut self, depth: usize) -> Result<Option<Value>> {
         loop {
             let frame = self.frames.last_mut().expect("run has a frame");
             let code = frame.code.clone();
@@ -174,6 +175,9 @@ impl Vm {
                 numeric(frame, i.opcode)?
             }
             (ACONST_NULL, _) => frame.push(Value::Ref(Ref::NULL))?,
+            (GETSTATIC | PUTSTATIC, &Operand::Constant(index)) => {
+                self.static_op(i.opcode, index)?
+            }
             (NEW | GETFIELD | PUTFIELD, &Operand::Constant(index)) => {
                 self.object_op(i.opcode, index)?
             }
@@ -339,6 +343,9 @@ impl Vm {
             let m = format!("Expected static method '{name}'");
             return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
+        // @hide
+        self.initialize(&class)?;
+        // @show
         let caller = self.frames.last_mut().expect("invokestatic has a caller");
         let args = caller.pop_args(callee.arg_slots())?;
         let frame = Frame::new(class.clone(), method, &args)?;
@@ -347,7 +354,7 @@ impl Vm {
     }
 
     /// Pushes a new frame, unless the stack is full.
-    fn call(&mut self, frame: Frame) -> Result<()> {
+    pub(crate) fn call(&mut self, frame: Frame) -> Result<()> {
         if self.frames.len() == MAX_FRAMES {
             let class = "java/lang/StackOverflowError";
             return Err(Error::Exception { class, message: None });
@@ -389,6 +396,9 @@ impl Vm {
             if flags.has(AccessFlags::ABSTRACT | AccessFlags::INTERFACE) {
                 return Err(linkage("java/lang/InstantiationError", dotted(name)));
             }
+            // @hide
+            self.initialize(&class)?;
+            // @show
             let object = self.heap.new_object(&class);
             return self.frames.last_mut().expect("a frame").push(Value::Ref(object));
         }
