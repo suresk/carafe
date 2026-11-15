@@ -11,7 +11,7 @@ use crate::loader::{ClassPath, linkage};
 use crate::numeric::numeric;
 use crate::opcode::*;
 use crate::pool::Constant;
-use crate::resolve::{dotted, external};
+use crate::resolve::{dotted, external, find_in_superclasses, is_subclass, package};
 use crate::strings::is_string;
 use crate::value::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -450,29 +450,44 @@ impl Vm {
     // @end
 
     // @listing invoke-special
-    /// `invokespecial`, for now only of a constructor.
+    /// `invokespecial`: a constructor, a private method, or a superclass's
+    /// version of a method (`super.m()`), with no selection by the object's
+    /// class (JVMS 6.5).
     fn invoke_special(&mut self, index: u16) -> Result<Flow> {
         let from = self.frames.last().expect("a caller").class.clone();
         let target = from.file.constant_pool.member(index)?;
         let object_init =
             (target.class, target.name) == ("java/lang/Object", "<init>");
         if object_init && from.superclass.is_none() {
-            // Object is a stand-in until Chapter 10, and its constructor is empty.
+            // Object is a stand-in, and its constructor is empty.
             let caller = self.frames.last_mut().expect("a caller");
             non_null(caller.pop_ref()?)?;
             return Ok(Flow::Next);
         }
-        if target.name != "<init>" {
-            let m = format!("invokespecial of {}.{}", target.class, target.name);
-            return Err(Error::Unsupported(m));
-        }
         let (class, method) = self.resolve_method(&from, index)?;
+        // `super.m()`: start the search at the current class's superclass.
+        let (class, method) = match &from.superclass {
+            Some(superclass)
+                if target.name != "<init>"
+                    && is_subclass(&from, &class)
+                    && !Rc::ptr_eq(&from, &class) =>
+            {
+                find_in_superclasses(superclass, target.name, target.descriptor)
+                    .unwrap_or((class, method))
+            }
+            _ => (class, method),
+        };
+        let callee = &class.file.methods[method];
         let caller = self.frames.last_mut().expect("a caller");
-        let args = caller.pop_args(class.file.methods[method].arg_slots())?;
+        let args = caller.pop_args(callee.arg_slots())?;
         let Some(&Value::Ref(this)) = args.first() else {
             return Err(Error::Verify(format!("{} without an object", target.name)));
         };
         non_null(this)?;
+        if callee.access_flags.has(AccessFlags::ABSTRACT) {
+            let receiver = self.heap.class_of(this).clone();
+            return Err(abstract_method(&receiver, &class, method));
+        }
         let frame = Frame::new(class.clone(), method, &args)?;
         self.call(frame)?;
         Ok(Flow::Next)
@@ -517,8 +532,14 @@ impl Vm {
             return Err(Error::Unsupported(format!("{} of an array", resolved.name)));
         }
         let receiver = self.heap.class_of(this).clone();
-        let (class, method) = select(&receiver, &resolved.name, &resolved.descriptor)
-            .unwrap_or((class.clone(), method));
+        let (class, method) = match select(&receiver, &class, method) {
+            Some((c, m))
+                if !c.file.methods[m].access_flags.has(AccessFlags::ABSTRACT) =>
+            {
+                (c, m)
+            }
+            _ => return Err(abstract_method(&receiver, &class, method)),
+        };
         self.call(Frame::new(class, method, &args)?)?;
         Ok(Flow::Next)
     }
@@ -526,23 +547,88 @@ impl Vm {
 }
 
 // @listing select
-/// The method that overrides `name` with `descriptor` for an object of class
-/// `receiver`: the first non-static one found in the receiver's class or its
-/// superclasses. Chapter 11 completes the JVMS's rules.
-fn select(
+/// The method that an `invokevirtual` of method `mr` of `resolved` runs for
+/// an object of class `receiver` (JVMS 5.4.6): `mr` itself if it is
+/// private, and otherwise the first method found, from `receiver` up, that
+/// is `mr` or can override it. Chapter 13 adds default methods.
+pub fn select(
     receiver: &Rc<Class>,
-    name: &str,
-    descriptor: &str,
+    resolved: &Rc<Class>,
+    mr: usize,
 ) -> Option<(Rc<Class>, usize)> {
+    let m = &resolved.file.methods[mr];
+    if m.access_flags.has(AccessFlags::PRIVATE) {
+        return Some((resolved.clone(), mr));
+    }
     let mut class = Some(receiver.clone());
     while let Some(c) = class {
-        if let Ok(method) = c.method(name, descriptor)
-            && !c.file.methods[method].access_flags.has(AccessFlags::STATIC)
-        {
-            return Some((c, method));
+        if let Ok(mc) = c.method(&m.name, &m.descriptor) {
+            let same = Rc::ptr_eq(&c, resolved) && mc == mr;
+            if same || overrides(&c, mc, resolved, mr) {
+                return Some((c, mc));
+            }
         }
         class = c.superclass.clone();
     }
     None
+}
+
+/// Whether method `mc` of `c` can override method `ma` of `a` (JVMS 5.4.5).
+fn overrides(c: &Rc<Class>, mc: usize, a: &Rc<Class>, ma: usize) -> bool {
+    let (method_c, method_a) = (&c.file.methods[mc], &a.file.methods[ma]);
+    let flags = method_c.access_flags;
+    if method_c.name != method_a.name || method_c.descriptor != method_a.descriptor {
+        return false;
+    }
+    if flags.has(AccessFlags::PRIVATE | AccessFlags::STATIC) {
+        return false;
+    }
+    if method_a.access_flags.has(AccessFlags::PUBLIC | AccessFlags::PROTECTED) {
+        return true;
+    }
+    // Package-private: the same package, or through a class in between
+    // whose method overrides `ma` and is overridden by `mc`.
+    if package(&c.file.this_class) == package(&a.file.this_class) {
+        return true;
+    }
+    let mut b = c.superclass.clone();
+    while let Some(between) = b {
+        if Rc::ptr_eq(&between, a) {
+            break;
+        }
+        if let Ok(mb) = between.method(&method_a.name, &method_a.descriptor)
+            && overrides(c, mc, &between, mb)
+            && overrides(&between, mb, a, ma)
+        {
+            return true;
+        }
+        b = between.superclass.clone();
+    }
+    false
+}
+
+/// HotSpot's `AbstractMethodError` for a receiver that has no
+/// implementation of method `mr` of `resolved`.
+fn abstract_method(receiver: &Class, resolved: &Class, mr: usize) -> Error {
+    let m = &resolved.file.methods[mr];
+    let flags = resolved.file.access_flags;
+    let kind = if flags.has(AccessFlags::INTERFACE) {
+        "interface"
+    } else if flags.has(AccessFlags::ABSTRACT) {
+        "abstract class"
+    } else {
+        "class"
+    };
+    let ret = m.ty.ret.as_ref().map_or("void".to_string(), |t| t.to_string());
+    let params: Vec<String> = m.ty.params.iter().map(|p| p.to_string()).collect();
+    let message = format!(
+        "Receiver class {} does not define or inherit an implementation of the \
+         resolved method 'abstract {ret} {}({})' of {kind} {}.",
+        dotted(&receiver.file.this_class),
+        m.name,
+        params.join(", "),
+        dotted(&resolved.file.this_class)
+    );
+    linkage("java/lang/AbstractMethodError", message)
 }
 // @end

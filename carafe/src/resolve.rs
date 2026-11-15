@@ -174,7 +174,7 @@ fn nest_host(class: &Class) -> String {
 }
 
 /// Whether `class` is `ancestor` or one of its subclasses.
-fn is_subclass(class: &Class, ancestor: &Rc<Class>) -> bool {
+pub(crate) fn is_subclass(class: &Class, ancestor: &Rc<Class>) -> bool {
     if class.file.this_class == ancestor.file.this_class {
         return true;
     }
@@ -199,5 +199,24 @@ pub(crate) fn external(class: &str, name: &str, ty: &MethodDescriptor) -> String
     let ret = ty.ret.as_ref().map_or("void".to_string(), |t| t.to_string());
     let params: Vec<String> = ty.params.iter().map(|p| p.to_string()).collect();
     format!("{ret} {}.{name}({})", dotted(class), params.join(", "))
+}
+// @end
+
+// @listing find-in-superclasses
+/// The first method named `name` with `descriptor` declared in `class` or
+/// its superclasses: the method `super.name()` calls (JVMS 6.5.invokespecial).
+pub(crate) fn find_in_superclasses(
+    class: &Rc<Class>,
+    name: &str,
+    descriptor: &str,
+) -> Option<(Rc<Class>, usize)> {
+    let mut c = Some(class.clone());
+    while let Some(current) = c {
+        if let Ok(index) = current.method(name, descriptor) {
+            return Some((current, index));
+        }
+        c = current.superclass.clone();
+    }
+    None
 }
 // @end
