@@ -2,3 +2,4 @@
 //! only what its chapter has built.
 
 pub mod ch01;
+pub mod ch02;

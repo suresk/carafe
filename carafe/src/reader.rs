@@ -55,4 +55,11 @@ impl<'a> Reader<'a> {
         Ok(self.take(N)?.try_into().expect("take returned N bytes"))
     }
     // @end
+
+    // @listing reader-left
+    /// The number of bytes not yet read.
+    pub fn left(&self) -> usize {
+        self.bytes.len() - self.at
+    }
+    // @end
 }

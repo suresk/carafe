@@ -61,10 +61,10 @@ impl Jdk {
         Ok(())
     }
 
-    /// The output of `javap -v` for the class file at `class`.
+    /// The output of `javap -v -p` for the class file at `class`.
     pub fn javap(&self, class: &Path) -> Result<String> {
         let mut javap = Command::new(self.home.join("bin").join("javap"));
-        self.run(javap.arg("-v").arg(class))
+        self.run(javap.args(["-v", "-p"]).arg(class))
     }
 
     fn run(&self, command: &mut Command) -> Result<String> {
