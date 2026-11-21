@@ -66,7 +66,7 @@ public class Functional {
         int[] numbers = {5, 3, 9, 1, 7};
         Arrays.sort(numbers);
         System.out.println(Arrays.toString(numbers));
-        String[] names = {"carafe", "Ember", "felite"};
+        String[] names = {"carafe", "Mug", "bottle"};
         Arrays.sort(names, String.CASE_INSENSITIVE_ORDER);
         System.out.println(String.join(" ", names));
     }

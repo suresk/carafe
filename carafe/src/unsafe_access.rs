@@ -21,10 +21,8 @@ fn array_index_scale(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let class = vm.class_of_mirror(mirror)?;
     let element = FieldType::parse(&class.file.this_class)?;
     let FieldType::Array(element) = element else {
-        return Err(Error::Verify(format!(
-            "{} is not an array",
-            class.file.this_class
-        )));
+        let class = "java/lang/IllegalArgumentException";
+        return Err(Error::Exception { class, message: None });
     };
     Ok(Some(Value::Int(size_of(&element) as i32)))
 }
@@ -32,19 +30,21 @@ fn array_index_scale(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
 /// `Unsafe.objectFieldOffset1(Class, String)`: the offset of an instance
 /// field from the start of the object, which is where carafe's layout put it.
 fn object_field_offset(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
-    let [_, Value::Ref(mirror), Value::Ref(name)] = *args else { unreachable!() };
+    let [_, Value::Ref(mirror), Value::Ref(name)] = *args else {
+        unreachable!("checked descriptor")
+    };
     let class = vm.class_of_mirror(mirror)?;
     let name = vm.rust_string(name)?;
     let Some(slot) = class.layout.fields.iter().rev().find(|f| f.name == name) else {
         let class = "java/lang/InternalError";
-        return Err(Error::Exception { class, message: Some(name) });
+        return Err(Error::Exception { class, message: None });
     };
     Ok(Some(Value::Long(slot.offset.into())))
 }
 
 // @hide
 /// `Unsafe.objectFieldOffset0(Field)`: the same, for the field a `Field`
-/// stands for, by its declaring class and its slot.
+/// represents, by its declaring class and its slot.
 fn field_offset(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let [_, Value::Ref(field)] = *args else { unreachable!("checked descriptor") };
     let (class, index) = vm.member_of(field, "java/lang/reflect/Field")?;
@@ -71,9 +71,9 @@ pub(crate) fn get(
     ty: FieldType,
 ) -> Result<Option<Value>> {
     let [_, Value::Ref(object), Value::Long(offset), ..] = *args else {
-        unreachable!()
+        unreachable!("checked descriptor")
     };
-    let at = address(object, offset)?;
+    let at = address(vm, object, offset, &ty)?;
     Ok(Some(vm.heap.read(at, &ty)))
 }
 
@@ -84,15 +84,18 @@ pub(crate) fn put(
     ty: FieldType,
 ) -> Result<Option<Value>> {
     let [_, Value::Ref(object), Value::Long(offset), value] = *args else {
-        unreachable!()
+        unreachable!("checked descriptor")
     };
-    vm.heap.write(address(object, offset)?, &ty, value)?;
+    let at = address(vm, object, offset, &ty)?;
+    vm.heap.write(at, &ty, value)?;
     Ok(None)
 }
 
 /// `Unsafe.compareAndSetInt(Object, long, int expected, int value)` and the
 /// rest: store `value` if the field holds `expected`. With one thread there
-/// is nothing to make atomic.
+/// is nothing to make atomic. It compares `Value`s, which is right for the
+/// integral and reference types it is used with; a `float` or `double` form
+/// would have to compare bits, since `NaN != NaN`.
 pub(crate) fn compare_and_set(
     vm: &mut Vm,
     args: &[Value],
@@ -101,7 +104,7 @@ pub(crate) fn compare_and_set(
     let [_, Value::Ref(object), Value::Long(offset), expected, value] = *args else {
         unreachable!("checked descriptor")
     };
-    let at = address(object, offset)?;
+    let at = address(vm, object, offset, &ty)?;
     let same = vm.heap.read(at, &ty) == expected;
     if same {
         vm.heap.write(at, &ty, value)?;
@@ -114,11 +117,23 @@ pub(crate) fn object() -> FieldType {
     FieldType::Object("java/lang/Object".to_string())
 }
 
-/// The heap offset `offset` bytes into `object`.
-fn address(object: Ref, offset: i64) -> Result<u32> {
+/// The heap offset `offset` bytes into `object`, for an access of type `ty`,
+/// which must lie inside the object, header included.
+fn address(vm: &Vm, object: Ref, offset: i64, ty: &FieldType) -> Result<u32> {
     let object = non_null(object)?;
-    u32::try_from(i64::from(object.0) + offset)
-        .map_err(|_| Error::Unsupported(format!("Unsafe at offset {offset}")))
+    let heap = &vm.heap;
+    let size = if heap.is_array(object) {
+        let scale = size_of(heap.element_type(object));
+        ARRAY_HEADER + heap.array_length(object) * scale
+    } else {
+        heap.class_of(object).layout.size
+    };
+    if !(0..=i64::from(size) - i64::from(size_of(ty))).contains(&offset) {
+        let class = "java/lang/InternalError";
+        let m = format!("Unsafe access at offset {offset} outside {size} bytes");
+        return Err(Error::Exception { class, message: Some(m) });
+    }
+    Ok(object.0 + offset as u32)
 }
 // @end
 

@@ -7,7 +7,7 @@ use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::interpreter::Vm;
 use crate::loader::linkage;
-use crate::opcode::GETSTATIC;
+use crate::opcode::{GETSTATIC, PUTSTATIC};
 use crate::pool::Constant;
 use crate::resolve::dotted;
 use crate::value::Value;
@@ -60,7 +60,8 @@ impl Vm {
 
     // @listing run-initializers
     /// Steps 6 to 9 of JVMS 5.5: constant values, then the superclass and the
-    /// interfaces that declare default methods, then the class's `<clinit>`.
+    /// superinterfaces, direct or indirect, that declare non-abstract instance
+    /// methods, then the class's `<clinit>`.
     fn run_initializers(&mut self, class: &Rc<Class>) -> Result<()> {
         let static_fields = class.file.fields.iter();
         let static_fields =
@@ -90,14 +91,7 @@ impl Vm {
             if let Some(superclass) = &class.superclass {
                 self.initialize(superclass)?;
             }
-            for interface in &class.interfaces {
-                let defaults = interface.file.methods.iter().any(|m| {
-                    !m.access_flags.has(AccessFlags::ABSTRACT | AccessFlags::STATIC)
-                });
-                if defaults {
-                    self.initialize(interface)?;
-                }
-            }
+            self.initialize_superinterfaces(class)?;
         }
         let Ok(clinit) = class.method("<clinit>", "()V") else { return Ok(()) };
         let depth = self.frames.len();
@@ -105,6 +99,22 @@ impl Vm {
         let result = self.run(depth);
         self.frames.truncate(depth);
         result.map(|_| ())
+    }
+
+    /// JVMS 5.5 step 7: the superinterfaces of `class`, direct or not, that
+    /// declare a non-abstract, non-static method, each after its own
+    /// superinterfaces.
+    fn initialize_superinterfaces(&mut self, class: &Rc<Class>) -> Result<()> {
+        for interface in &class.interfaces {
+            self.initialize_superinterfaces(interface)?;
+            let concrete = interface.file.methods.iter().any(|m| {
+                !m.access_flags.has(AccessFlags::ABSTRACT | AccessFlags::STATIC)
+            });
+            if concrete {
+                self.initialize(interface)?;
+            }
+        }
+        Ok(())
     }
     // @end
 
@@ -114,8 +124,14 @@ impl Vm {
     pub(crate) fn static_op(&mut self, opcode: u8, index: u16) -> Result<()> {
         let from = self.frames.last().expect("a frame").class.clone();
         // @hide
-        if let Some(Resolved::Static(owner, slot, ty)) = from.cached(index) {
-            return self.static_access(opcode, owner, *slot, ty);
+        match from.cached(index) {
+            Some(Resolved::Static(owner, slot, ty)) => {
+                return self.static_access(opcode, owner, *slot, ty);
+            }
+            Some(Resolved::FinalStatic(owner, slot, ty)) if opcode == GETSTATIC => {
+                return self.static_access(opcode, owner, *slot, ty);
+            }
+            _ => {}
         }
         // @show
         let (owner, field) = self.resolve_field(&from, index)?;
@@ -127,15 +143,20 @@ impl Vm {
             );
             return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
+        if opcode == PUTSTATIC {
+            self.check_final_store(&owner, &field)?;
+        }
         self.initialize(&owner)?;
         let slot =
             owner.static_slot(&field.name, &field.descriptor).expect("declared");
         // @hide
         if initialized(&owner) {
-            from.cache(
-                index,
-                Resolved::Static(owner.clone(), slot, field.ty.clone()),
-            );
+            let ty = field.ty.clone();
+            if field.access_flags.has(AccessFlags::FINAL) {
+                from.cache(index, Resolved::FinalStatic(owner.clone(), slot, ty));
+            } else {
+                from.cache(index, Resolved::Static(owner.clone(), slot, ty));
+            }
         }
         // @show
         let frame = self.frames.last_mut().expect("a frame");

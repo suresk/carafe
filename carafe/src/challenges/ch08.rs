@@ -26,9 +26,10 @@ pub fn references(file: &ClassFile) -> Result<BTreeSet<String>> {
         match constant {
             Constant::Class { name } => {
                 let name = file.constant_pool.utf8(*name)?;
-                match name.starts_with('[') {
-                    true => descriptors.push(name.to_string()),
-                    false => descriptors.push(format!("L{name};")),
+                if name.starts_with('[') {
+                    descriptors.push(name.to_string());
+                } else {
+                    descriptors.push(format!("L{name};"));
                 }
             }
             Constant::NameAndType { descriptor, .. } => {

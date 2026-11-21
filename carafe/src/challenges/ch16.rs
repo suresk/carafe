@@ -23,10 +23,11 @@ pub fn static_int(vm: &mut Vm, class: &str, name: &str) -> Result<i32> {
 // @listing full-report
 /// `Vm::report` with suppressed exceptions, as `Throwable.printStackTrace`
 /// prints them: each one indented by a tab more than the exception that
-/// suppressed it, before that exception's cause.
+/// suppressed it, before that exception's cause. An exception met a second
+/// time is a `[CIRCULAR REFERENCE: …]`.
 pub fn full_report(vm: &mut Vm, exception: Ref) -> Result<String> {
     let mut out = String::from("Exception in thread \"main\" ");
-    enclosed(vm, &mut out, exception, &[], "", "")?;
+    enclosed(vm, &mut out, exception, &[], ("", ""), &mut Vec::new())?;
     Ok(out)
 }
 
@@ -35,9 +36,15 @@ fn enclosed(
     out: &mut String,
     exception: Ref,
     enclosing: &[TraceFrame],
-    caption: &str,
-    prefix: &str,
+    (caption, prefix): (&str, &str),
+    printed: &mut Vec<Ref>,
 ) -> Result<()> {
+    if printed.contains(&exception) {
+        let this = vm.java_to_string(exception)?;
+        *out += &format!("{prefix}{caption}[CIRCULAR REFERENCE: {this}]\n");
+        return Ok(());
+    }
+    printed.push(exception);
     *out += &format!("{prefix}{caption}{}\n", vm.java_to_string(exception)?);
     let trace = vm.backtraces.get(&exception).cloned().unwrap_or_default();
     let shared = trace.iter().rev().zip(enclosing.iter().rev());
@@ -62,18 +69,13 @@ fn enclosed(
         else {
             unreachable!("a Throwable[]")
         };
-        enclosed(
-            vm,
-            out,
-            suppressed,
-            &trace,
-            "Suppressed: ",
-            &format!("{prefix}\t"),
-        )?;
+        let indented = format!("{prefix}\t");
+        let caption = ("Suppressed: ", indented.as_str());
+        enclosed(vm, out, suppressed, &trace, caption, printed)?;
     }
     let cause = vm.java_cause(exception)?;
-    if cause != Ref::NULL && cause != exception {
-        enclosed(vm, out, cause, &trace, "Caused by: ", prefix)?;
+    if cause != Ref::NULL {
+        enclosed(vm, out, cause, &trace, ("Caused by: ", prefix), printed)?;
     }
     Ok(())
 }

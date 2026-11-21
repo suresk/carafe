@@ -5,6 +5,7 @@ public class Init {
         System.out.println(constantsAreNotAccesses());
         System.out.println(cycle());
         System.out.println(interfaces());
+        System.out.println(superinterfaces());
         for (int i = 0; i < 2; i++) {
             try {
                 System.out.println(failing());
@@ -38,6 +39,12 @@ public class Init {
     static long interfaces() {
         Trace.reset();
         new Implementer();
+        return Trace.trace;
+    }
+
+    static long superinterfaces() {
+        Trace.reset();
+        new Indirect();
         return Trace.trace;
     }
 
@@ -101,6 +108,22 @@ interface WithoutDefault {
 
 class Implementer implements WithDefault, WithoutDefault {
     static int i = Trace.mark(8);
+}
+
+interface Deep {
+    int D = Trace.mark(9);
+
+    default int d() {
+        return D;
+    }
+}
+
+interface Shallow extends Deep {
+    int S = Trace.mark(7);
+}
+
+class Indirect implements Shallow {
+    static int c = Trace.mark(8);
 }
 
 class Fragile {

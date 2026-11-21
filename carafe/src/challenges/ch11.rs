@@ -6,10 +6,12 @@ use crate::interpreter::select;
 use std::rc::Rc;
 
 // @listing vtable
-/// The class's virtual methods, as HotSpot's vtable orders them: the
+/// The class's virtual methods, as HotSpot builds its vtable: the
 /// superclass's entries first, each replaced by the method that overrides it
-/// here, then the class's new methods. Each entry is (name + descriptor,
-/// the class whose method runs).
+/// here, then the class's new methods in declaration order. A `final` method,
+/// or any method of a `final` class, that overrides nothing gets no entry,
+/// since no call to it needs one. Each entry is (name + descriptor, the class
+/// whose method runs).
 pub fn vtable(class: &Rc<Class>) -> Vec<(String, String)> {
     let mut table = match &class.superclass {
         Some(superclass) => vtable(superclass),
@@ -27,8 +29,11 @@ pub fn vtable(class: &Rc<Class>) -> Vec<(String, String)> {
         let replaced = table
             .iter_mut()
             .find(|(k, holder)| *k == key && overridden(class, index, holder, &key));
+        let final_ = flags.has(AccessFlags::FINAL)
+            || class.file.access_flags.has(AccessFlags::FINAL);
         match replaced {
             Some(entry) => entry.1 = owner,
+            None if final_ => {}
             None => table.push((key, owner)),
         }
     }

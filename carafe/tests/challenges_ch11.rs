@@ -54,6 +54,7 @@ fn a_vtable() {
     assert_eq!(find("secret()V"), None); // private
     assert_eq!(find("toString()Ljava/lang/String;"), Some("java/lang/Object"));
     let object = vtable(&vm.load("java/lang/Object").unwrap()).len();
+    assert_eq!(object, 5); // hashCode, equals, clone, toString, finalize
     let animal = vtable(&vm.load("Animal").unwrap()).len();
     assert_eq!(animal - object, 4); // speak, origin, secretly, describe
     assert_eq!(table.len(), animal); // Dog and Puppy only override

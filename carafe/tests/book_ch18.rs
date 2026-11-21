@@ -59,7 +59,7 @@ fn lambdas() {
     let (_, ours, theirs) = both("Functional");
     assert_eq!(ours, theirs);
     assert!(ours.contains("[fig, pear, kiwi, apple, banana]\n"));
-    assert!(ours.ends_with("true\nrun\n[1, 3, 5, 7, 9]\ncarafe Ember felite\n"));
+    assert!(ours.ends_with("true\nrun\n[1, 3, 5, 7, 9]\nbottle carafe Mug\n"));
     // @end
 }
 

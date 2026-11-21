@@ -1,15 +1,16 @@
+// @listing lang-access
 package java.lang;
 
 import jdk.internal.access.JavaLangAccess;
 import jdk.internal.reflect.ConstantPool;
 
-// @listing lang-access
 /**
  * carafe's {@code JavaLangAccess}: the private parts of {@code java.lang} that
  * the rest of {@code java.base} reaches through {@code SharedSecrets}. The
  * JDK's {@code System} registers its own during startup, which carafe's shim
  * replaces. The methods carafe's programs need call {@code Class} and
- * {@code String}; the others say which method was called.
+ * {@code String}; the other 84 throw {@code UnsupportedOperationException}
+ * naming the method.
  */
 final class LangAccess implements JavaLangAccess {
     @Override

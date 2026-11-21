@@ -23,7 +23,8 @@ fn run(program: &str) -> Vm {
 #[test]
 fn who_needs_a_thread() {
     let made = |program: &str| run(program).thread.is_some();
-    // Reading input locks, and a lock records the thread that holds it.
+    // Only `Input` calls `Thread.currentThread()`; on JDK 25 `BufferedReader`
+    // locks with `synchronized`.
     assert_eq!(
         [made("Hello"), made("Pipelines"), made("Input")],
         [false, false, true]

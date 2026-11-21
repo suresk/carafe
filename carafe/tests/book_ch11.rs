@@ -111,3 +111,20 @@ fn a_missing_implementation() {
     assert!(theirs.contains(&error));
     // @end
 }
+
+#[test]
+fn package_private_selection() {
+    // @listing package-private-test
+    // javac finds the classes of `java/p` and `java/q` that `Packages` uses,
+    // and compiles them into the same directory, by package.
+    let class = compile("Packages", "Packages");
+    let classes = class.parent().unwrap();
+    let jdk = Jdk::find().unwrap();
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("jdk");
+    let mut vm = Vm::boot(&jdk, &work, classes).unwrap();
+    vm.run_main("Packages").unwrap();
+    let ours = String::from_utf8(vm.stdout).unwrap();
+    assert_eq!(ours, "C.m\nZ.m\nY.m\nX.m\n");
+    assert_eq!(ours, jdk.java(classes, "Packages").unwrap());
+    // @end
+}

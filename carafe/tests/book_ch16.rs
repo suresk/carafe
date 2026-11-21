@@ -63,3 +63,22 @@ fn overflowing() {
     assert_eq!(ours[1].lines().count(), 1 + 1024); // the exception, then 1,024 frames
     // @end
 }
+
+#[test]
+fn traces_as_hotspot_prints_them() {
+    // A cycle of causes, a cause that shares a line but not a pc with its
+    // enclosing trace, a native's frame, and a trace read from Java.
+    for program in ["RvCycle", "RvSameLine", "RvNative", "RvPrint"] {
+        let (_, ours, theirs) = both(program);
+        assert_eq!(ours, theirs, "{program}");
+    }
+    let (_, ours, _) = both("RvCycle");
+    assert!(ours[1].ends_with(
+        "Caused by: [CIRCULAR REFERENCE: java.lang.RuntimeException: y]\n"
+    ));
+    let (_, ours, _) = both("RvNative");
+    assert!(
+        ours[1]
+            .contains("\tat java.base/java.lang.System.arraycopy(Native Method)\n")
+    );
+}

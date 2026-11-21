@@ -82,6 +82,9 @@ impl Frame {
                 wide if wide.is_wide() => Ok(wide),
                 _ => Err(verify(self.name(), "pops half of a value")),
             },
+            wide if wide.is_wide() => {
+                Err(verify(self.name(), "pops half of a value"))
+            }
             value => Ok(value),
         }
     }
@@ -134,6 +137,10 @@ impl Frame {
         place[0] = value;
         if width == 2 {
             place[1] = Value::Top;
+        }
+        // Over the second half of a `long`: its first half is gone too.
+        if n > 0 && self.locals[n - 1].is_wide() {
+            self.locals[n - 1] = Value::Top;
         }
         Ok(())
     }

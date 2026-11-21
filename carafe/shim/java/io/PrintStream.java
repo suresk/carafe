@@ -1,6 +1,6 @@
+// @listing print-stream-shim
 package java.io;
 
-// @listing print-stream-shim
 /**
  * carafe's PrintStream: text written straight to a file descriptor, through
  * one native method. The line separator is always "\n".

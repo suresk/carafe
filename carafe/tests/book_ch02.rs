@@ -140,7 +140,7 @@ fn damaged_class_files() {
         "ClassFormatError: the class file of Hello has 3 bytes after its last attribute"
     );
 
-    // Rename the pool's one "Code" to "Cade", which no JVM has heard of.
+    // Rename the pool's one "Code" to "Cade", which no JVM recognizes.
     let mut renamed = hello.clone();
     let at = hello.windows(4).position(|w| w == b"Code").unwrap();
     renamed[at + 1] = b'a';
@@ -184,6 +184,7 @@ fn the_members_match_javap() {
             if let Some(code) = &method.code {
                 let (stack, locals) = (code.max_stack, code.max_locals);
                 let this = usize::from(!method.access_flags.has(AccessFlags::STATIC));
+                // javap counts arguments, not slots
                 let args = this + method.ty.params.len();
                 ours.push(format!(
                     "stack={stack}, locals={locals}, args_size={args}"

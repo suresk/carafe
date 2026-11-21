@@ -112,7 +112,7 @@ fn malformed(text: &str) -> Error {
 // @listing field-type-display
 /// A type as Java source writes it: `int`, `java.lang.String[]`.
 impl fmt::Display for FieldType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             FieldType::Byte => "byte",
             FieldType::Char => "char",

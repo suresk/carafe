@@ -100,7 +100,8 @@ pub(crate) fn length(count: i32) -> Result<u32> {
     })
 }
 
-/// The element type of `newarray` (JVMS Table 6.5.newarray-A).
+/// The element type of `newarray` (JVMS Table 6.5.newarray-A), whose code
+/// the decoder has checked is from 4 to 11.
 fn primitive(code: u8) -> FieldType {
     match code {
         4 => FieldType::Boolean,
@@ -110,16 +111,18 @@ fn primitive(code: u8) -> FieldType {
         8 => FieldType::Byte,
         9 => FieldType::Short,
         10 => FieldType::Int,
-        _ => FieldType::Long,
+        11 => FieldType::Long,
+        _ => unreachable!("newarray type {code}"),
     }
 }
 
 /// The type named by a `Class` constant: a class, or an array class, whose
 /// name is its descriptor.
 fn class_type(name: &str) -> Result<FieldType> {
-    match name.starts_with('[') {
-        true => FieldType::parse(name),
-        false => Ok(FieldType::Object(name.to_string())),
+    if name.starts_with('[') {
+        FieldType::parse(name)
+    } else {
+        Ok(FieldType::Object(name.to_string()))
     }
 }
 // @end
@@ -154,9 +157,8 @@ pub(crate) fn arraycopy(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let primitive =
         |t: &FieldType| !matches!(t, FieldType::Object(_) | FieldType::Array(_));
     if from != to && (primitive(&from) || primitive(&to)) {
-        let name = |t: &FieldType| match primitive(t) {
-            true => format!("{t}[]"),
-            false => "object array[]".to_string(),
+        let name = |t: &FieldType| {
+            if primitive(t) { format!("{t}[]") } else { "object array[]".to_string() }
         };
         return Err(store(format!(
             "type mismatch: can not copy {} into {}",
@@ -168,20 +170,29 @@ pub(crate) fn arraycopy(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
         class: "java/lang/ArrayIndexOutOfBoundsException",
         message: Some(format!("arraycopy: {m}")),
     };
+    // HotSpot names an array of references `object array[5]`, and `int[5]`.
+    let ty = |r: Ref, t: &FieldType| match vm.heap.array_length(r) {
+        n if primitive(t) => format!("{t}[{n}]"),
+        n => format!("object array[{n}]"),
+    };
+    let (src_ty, dest_ty) = (ty(src, &from), ty(dest, &to));
+    if src_pos < 0 {
+        return Err(bounds(format!(
+            "source index {src_pos} out of bounds for {src_ty}"
+        )));
+    }
+    if dest_pos < 0 {
+        let m = format!("destination index {dest_pos} out of bounds for {dest_ty}");
+        return Err(bounds(m));
+    }
     if length < 0 {
         return Err(bounds(format!("length {length} is negative")));
     }
-    for (r, pos, which) in [(src, src_pos, "source"), (dest, dest_pos, "destination")]
+    for (r, pos, which, ty) in
+        [(src, src_pos, "source", src_ty), (dest, dest_pos, "destination", dest_ty)]
     {
-        let array_length = vm.heap.array_length(r);
-        let ty = format!("{}[{array_length}]", vm.heap.element_type(r));
-        if pos < 0 {
-            return Err(bounds(format!(
-                "{which} index {pos} out of bounds for {ty}"
-            )));
-        }
         let last = i64::from(pos) + i64::from(length);
-        if last > i64::from(array_length) {
+        if last > i64::from(vm.heap.array_length(r)) {
             return Err(bounds(format!(
                 "last {which} index {last} out of bounds for {ty}"
             )));

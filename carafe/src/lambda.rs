@@ -75,8 +75,8 @@ fn alternatives(
     let mut interfaces = vec![interface.to_string()];
     let mut bridges = Vec::new();
     let int = |index: Option<&u16>| match index.map(|&i| pool.get(i)) {
-        Some(Ok(&Constant::Integer(v))) => Ok(v as usize),
-        _ => Err(Error::ClassFormat("altMetafactory expects an int".into())),
+        Some(Ok(&Constant::Integer(v))) if v >= 0 => Ok(v as usize),
+        _ => Err(Error::ClassFormat("altMetafactory expects an int >= 0".into())),
     };
     let Some((flags, mut rest)) = extra.split_first() else {
         return Ok((interfaces, bridges));
@@ -141,6 +141,7 @@ impl Vm {
         let types = Types { erased, instantiated, captures: factory.params.clone() };
         let shape = Shape {
             name: &class_name,
+            caller: &caller.file.this_class,
             host: &host,
             interfaces: &interfaces,
             method: name,
@@ -205,10 +206,11 @@ struct Types {
 // @end
 
 // @listing lambda-class
-/// The names a lambda class is made with: its own, its nest host's, the
-/// interfaces it implements and the interface method's.
+/// The names a lambda class is made with: its own, its caller's, its nest
+/// host's, the interfaces it implements and the interface method's.
 struct Shape<'a> {
     name: &'a str,
+    caller: &'a str,
     host: &'a str,
     interfaces: &'a [String],
     method: &'a str,
@@ -233,7 +235,7 @@ fn lambda_class(
             name: shape.method.to_string(),
             descriptor: descriptor(erased),
             ty: erased.clone(),
-            code: Some(a.body(shape.name, &types, target)?),
+            code: Some(a.body(shape, &types, target)?),
             attributes: Vec::new(),
         });
     }
@@ -348,7 +350,12 @@ impl Assembler {
     /// The interface method's code: the captured values from the fields,
     /// then the method's own arguments, each adapted to the type `target`
     /// takes; the call; and the result, adapted to what the method returns.
-    fn body(&mut self, this: &str, types: &Types, target: &Handle) -> Result<Code> {
+    fn body(
+        &mut self,
+        shape: &Shape,
+        types: &Types,
+        target: &Handle,
+    ) -> Result<Code> {
         let receiver = matches!(
             target.kind,
             REF_INVOKE_VIRTUAL | REF_INVOKE_SPECIAL | REF_INVOKE_INTERFACE
@@ -369,8 +376,12 @@ impl Assembler {
         }
         for (i, ty) in types.captures.iter().enumerate() {
             self.op(ALOAD_0);
-            let field =
-                self.member(field_ref, this, &format!("arg${i}"), &ty.descriptor());
+            let field = self.member(
+                field_ref,
+                shape.name,
+                &format!("arg${i}"),
+                &ty.descriptor(),
+            );
             self.op_u2(GETFIELD, field);
             self.convert(ty, ty, &params[i])?;
         }
@@ -382,7 +393,7 @@ impl Assembler {
             let to = &params[types.captures.len() + j];
             self.convert(ty, &types.instantiated.params[j], to)?;
         }
-        let returns = self.call(target)?;
+        let returns = self.call(shape.caller, target)?;
         match (&returns, &types.erased.ret) {
             (None, None) => self.op(RETURN),
             (Some(r), None) => {
@@ -408,19 +419,27 @@ impl Assembler {
         })
     }
 
-    /// The call to `target`, and the type it leaves on the stack.
-    fn call(&mut self, target: &Handle) -> Result<Option<FieldType>> {
+    /// The call to `target`, made from a lambda class of `caller`, and the
+    /// type it leaves on the stack. An `invokeSpecial` handle, which only
+    /// `javac` before Java 11 emits, for a private method of the caller, is
+    /// called as `invokevirtual` or `invokeinterface`, as `LambdaMetafactory`
+    /// calls it, since `invokespecial` can't name another class's method.
+    fn call(&mut self, caller: &str, target: &Handle) -> Result<Option<FieldType>> {
         let (class, name) = (&target.class, &target.name);
         let text = descriptor(&target.descriptor);
         let make = if target.interface { interface_ref } else { method_ref };
         let method = self.member(make, class, name, &text);
         match target.kind {
             REF_INVOKE_STATIC => self.op_u2(INVOKESTATIC, method),
-            REF_INVOKE_VIRTUAL => self.op_u2(INVOKEVIRTUAL, method),
-            REF_INVOKE_SPECIAL | REF_NEW_INVOKE_SPECIAL => {
-                self.op_u2(INVOKESPECIAL, method)
+            REF_INVOKE_SPECIAL if class != caller => {
+                let m = format!("a REF_invokeSpecial handle to {class}.{name}");
+                return Err(Error::Unsupported(m));
             }
-            REF_INVOKE_INTERFACE => {
+            REF_INVOKE_VIRTUAL | REF_INVOKE_SPECIAL if !target.interface => {
+                self.op_u2(INVOKEVIRTUAL, method)
+            }
+            REF_NEW_INVOKE_SPECIAL => self.op_u2(INVOKESPECIAL, method),
+            REF_INVOKE_INTERFACE | REF_INVOKE_SPECIAL => {
                 self.op_u2(INVOKEINTERFACE, method);
                 let count = 1 + target.descriptor.param_slots();
                 self.code.extend([u8::try_from(count).map_err(|_| too_many())?, 0]);
@@ -457,13 +476,23 @@ impl Assembler {
                 self.op_u2(INVOKESTATIC, method);
                 Ok(())
             }
-            (None, Some(_)) => {
+            (None, Some((to_box, to_value))) => {
                 let unboxed = match hint {
                     FieldType::Object(name) => primitive_of(name),
                     _ => None,
                 };
-                let unboxed = unboxed.unwrap_or_else(|| to.clone());
-                let (box_class, value) = wrapper(&unboxed).expect("a primitive");
+                // No wrapper named: the base wrapper, `Number` for a number.
+                let (box_class, value, unboxed) = match unboxed {
+                    Some(unboxed) => {
+                        let (box_class, value) =
+                            wrapper(&unboxed).expect("a primitive");
+                        (box_class, value, unboxed)
+                    }
+                    None if matches!(to, FieldType::Boolean | FieldType::Char) => {
+                        (to_box, to_value, to.clone())
+                    }
+                    None => ("java/lang/Number", to_value, to.clone()),
+                };
                 let class = self.class(box_class);
                 self.op_u2(CHECKCAST, class);
                 let getter = format!("(){}", unboxed.descriptor());
@@ -484,7 +513,10 @@ impl Assembler {
         }
     }
 
-    /// A widening primitive conversion (JLS 5.1.2), such as `i2l`.
+    /// A widening primitive conversion (JLS 5.1.2), such as `i2l`. Kind 0
+    /// is `boolean`, `byte`, `char`, `short` and `int` alike; carafe trusts
+    /// `javac` not to ask for a narrowing among them, which
+    /// `LambdaMetafactory` would reject.
     fn widen(&mut self, from: &FieldType, to: &FieldType) -> Result<()> {
         let op = match (kind(from), kind(to)) {
             (a, b) if a == b => return Ok(()),

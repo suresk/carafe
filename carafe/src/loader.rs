@@ -9,6 +9,7 @@ use crate::heap::Ref;
 use crate::interpreter::Vm;
 use crate::pool::ConstantPool;
 use crate::reader::Reader;
+use crate::resolve::{dotted, package};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -22,8 +23,12 @@ pub struct ClassPath {
 
 impl ClassPath {
     /// The bytes of the class file for `name`, from the first directory
-    /// that has one.
+    /// that has one. A name that isn't a path inside a directory, such as
+    /// `/etc/C` or `a/../C`, names no class (JVMS 4.2.1).
     pub fn find(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        if name.split('/').any(|part| matches!(part, "" | "." | "..")) {
+            return Ok(None);
+        }
         for dir in &self.dirs {
             let path = dir.join(format!("{name}.class"));
             if path.is_file() {
@@ -68,10 +73,8 @@ impl Vm {
         self.loading.pop();
         // @hide
         let defined = defined.map(|mut class| {
-            let boot = self.class_path.dirs.iter().take(self.boot_dirs);
-            class.boot = boot
-                .into_iter()
-                .any(|dir| dir.join(format!("{name}.class")).is_file());
+            let mut boot = self.class_path.dirs.iter().take(self.boot_dirs);
+            class.boot = boot.any(|dir| dir.join(format!("{name}.class")).is_file());
             class
         });
         // @show
@@ -92,8 +95,9 @@ impl Vm {
             let loaded = self.load_super(&name, interface)?;
             if !loaded.file.access_flags.has(AccessFlags::INTERFACE) {
                 let m = format!(
-                    "class {name} cannot implement {interface}, \
-                                 because it is not an interface"
+                    "class {} can not implement {}, because it is not an interface",
+                    dotted(&name),
+                    dotted(interface)
                 );
                 return Err(linkage("java/lang/IncompatibleClassChangeError", m));
             }
@@ -108,23 +112,32 @@ impl Vm {
             }
             Some(superclass) => {
                 let superclass = self.load_super(&name, superclass)?;
-                let flags = superclass.file.access_flags;
+                let (flags, super_name) =
+                    (superclass.file.access_flags, &superclass.file.this_class);
                 if flags.has(AccessFlags::INTERFACE) {
                     let m = format!(
-                        "class {name} has interface {} as super class",
-                        superclass.file.this_class
+                        "class {} has interface {} as super class",
+                        dotted(&name),
+                        dotted(super_name)
                     );
                     return Err(linkage("java/lang/IncompatibleClassChangeError", m));
                 }
                 if flags.has(AccessFlags::FINAL) {
-                    return Err(Error::Verify(
-                        "Cannot inherit from final class".into(),
-                    ));
+                    let m = format!(
+                        "class {} cannot inherit from final class {}",
+                        dotted(&name),
+                        dotted(super_name)
+                    );
+                    return Err(linkage("java/lang/IncompatibleClassChangeError", m));
                 }
+                check_super_access(&name, &superclass, "superclass")?;
                 Class::extending(file, superclass)
             }
             None => Class::new(file),
         };
+        for interface in &interfaces {
+            check_super_access(&name, interface, "superinterface")?;
+        }
         class.interfaces = interfaces;
         // @hide
         crate::switches::check_permitted(&class)?;
@@ -140,33 +153,53 @@ impl Vm {
         }
         self.load(superclass)
     }
-    // @end
 }
+
+/// A class may extend or implement only a class it can access: a public one,
+/// or one in its own package (JVMS 5.3.5, 5.4.4).
+fn check_super_access(name: &str, sup: &Class, kind: &str) -> Result<()> {
+    let sup_name = &sup.file.this_class;
+    if sup.file.access_flags.has(AccessFlags::PUBLIC)
+        || package(name) == package(sup_name)
+    {
+        return Ok(());
+    }
+    let m = format!(
+        "class {} cannot access its {kind} {}",
+        dotted(name),
+        dotted(sup_name)
+    );
+    Err(linkage("java/lang/IllegalAccessError", m))
+}
+// @end
 
 impl Vm {
     // @listing load-array-class
     /// An array class, created by the VM rather than read from a class file
-    /// (JVMS 5.3.3): `public final abstract`, a subclass of `Object` that
-    /// implements `Cloneable` and `Serializable`, with no fields or methods
-    /// of its own. A reference element type's class is loaded first.
+    /// (JVMS 5.3.3): `final abstract`, and `public` unless its element class
+    /// isn't, a subclass of `Object` that implements `Cloneable` and
+    /// `Serializable`, with no fields or methods of its own. The class of a
+    /// reference element type is loaded first.
     fn load_array_class(&mut self, name: &str) -> Result<Rc<Class>> {
         let FieldType::Array(element) = FieldType::parse(name)? else {
             return Err(linkage("java/lang/NoClassDefFoundError", name.to_string()));
         };
-        match *element {
-            FieldType::Object(ref class) => {
-                self.load(class)?;
-            }
-            FieldType::Array(_) => {
-                self.load(&element.descriptor())?;
-            }
-            _ => {}
-        }
+        let component = match *element {
+            FieldType::Object(ref class) => Some(self.load(class)?),
+            FieldType::Array(_) => Some(self.load(&element.descriptor())?),
+            _ => None, // a primitive type
+        };
         let object = self.load("java/lang/Object")?;
         let interfaces = ["java/lang/Cloneable", "java/io/Serializable"];
         let interfaces: Vec<Rc<Class>> =
             interfaces.iter().map(|i| self.load(i)).collect::<Result<_>>()?;
-        let flags = AccessFlags::PUBLIC | AccessFlags::FINAL | AccessFlags::ABSTRACT;
+        let mut flags = AccessFlags::FINAL | AccessFlags::ABSTRACT;
+        if component
+            .as_ref()
+            .is_none_or(|c| c.file.access_flags.has(AccessFlags::PUBLIC))
+        {
+            flags |= AccessFlags::PUBLIC;
+        }
         let file = ClassFile {
             minor_version: 0,
             major_version: 69,
@@ -185,11 +218,7 @@ impl Vm {
         let mut class = Class::extending(file, object);
         class.interfaces = interfaces;
         // @hide
-        class.boot = match *element {
-            FieldType::Object(ref name) => self.load(name)?.boot,
-            FieldType::Array(_) => self.load(&element.descriptor())?.boot,
-            _ => true,
-        };
+        class.boot = component.as_ref().is_none_or(|c| c.boot);
         // @show
         let class = Rc::new(class);
         self.classes.insert(name.to_string(), class.clone());

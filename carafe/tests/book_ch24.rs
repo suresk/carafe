@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 // @listing score
-/// How a program of the measurement corpus did on carafe: whether it printed
-/// what HotSpot printed, and the classes, natives and instructions it took.
-#[derive(Debug, PartialEq)]
+/// How a corpus program did on carafe: whether its standard output matched
+/// HotSpot's, and the classes, natives and instructions it took.
+#[derive(Debug)]
 struct Score {
     program: String,
     same: bool,
@@ -49,7 +49,9 @@ fn the_scoreboard() {
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
     let mut programs: Vec<String> = std::fs::read_dir(&corpus)
         .unwrap()
-        .map(|e| e.unwrap().path().file_stem().unwrap().to_string_lossy().into())
+        .map(|e| e.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "java"))
+        .map(|path| path.file_stem().unwrap().to_string_lossy().into())
         .collect();
     programs.sort();
     let scores: Vec<Score> = programs.iter().map(|p| score(&jdk, p)).collect();
@@ -61,21 +63,21 @@ fn the_scoreboard() {
         table,
         [
             ("BigNumbers", true, 71, 15),
-            ("Collections2", true, 132, 24),
+            ("Collections2", true, 131, 24),
             ("Enums", true, 129, 27),
             ("Exceptions", true, 91, 15),
             ("Factories", true, 91, 18),
-            ("Format", false, 255, 42),
+            ("Format", false, 252, 42),
             ("Hello", true, 31, 5),
             ("HelpfulNpe", true, 49, 8),
             ("Modest", true, 108, 17),
-            ("Numbers", true, 114, 26),
+            ("Numbers", true, 113, 26),
             ("PatternSwitch", true, 79, 16),
-            ("ReadInput", true, 125, 24),
+            ("ReadInput", true, 114, 24),
             ("Records", true, 61, 10),
-            ("Streams", true, 228, 35),
+            ("Streams", true, 226, 35),
             ("StringSwitch", true, 50, 10),
-            ("Strings", true, 129, 24),
+            ("Strings", true, 127, 24),
         ]
     );
     let passed: Vec<&Score> = scores.iter().filter(|s| s.same).collect();

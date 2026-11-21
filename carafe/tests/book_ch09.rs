@@ -15,7 +15,7 @@ fn compile(source: &str, class: &str) -> PathBuf {
 // @listing helpers
 /// The classes `Init.java` declares.
 const CLASSES: &str = "Init Trace Base Derived Constants9 Ping Pong WithDefault \
-                       WithoutDefault Implementer Fragile";
+                       WithoutDefault Implementer Deep Shallow Indirect Fragile";
 
 /// A VM whose class path is a directory of its own, for the test `test`,
 /// holding the classes of `Init.java`; and that directory.
@@ -51,11 +51,14 @@ fn initialization_order() {
     assert_eq!(trace(&mut vm, "constantsAreNotAccesses"), Some(Value::Long(455)));
     assert_eq!(trace(&mut vm, "cycle"), Some(Value::Long(21)));
     assert_eq!(trace(&mut vm, "interfaces"), Some(Value::Long(68)));
+    assert_eq!(trace(&mut vm, "superinterfaces"), Some(Value::Long(98)));
 
     let derived = vm.load("Derived").unwrap();
     assert_eq!(*derived.statics.borrow(), [Value::Int(2), Value::Int(3)]);
     let without = vm.load("WithoutDefault").unwrap();
     assert_eq!(without.state.get(), State::Uninitialized);
+    let shallow = vm.load("Shallow").unwrap();
+    assert_eq!(shallow.state.get(), State::Uninitialized);
     // @end
 }
 
@@ -80,8 +83,13 @@ fn the_same_as_hotspot() {
     let (mut vm, dir) = vm("hotspot");
     let printed = Jdk::find().unwrap().java(&dir, "Init").unwrap();
     let mut ours = Vec::new();
-    let traces =
-        ["superclassFirst", "constantsAreNotAccesses", "cycle", "interfaces"];
+    let traces = [
+        "superclassFirst",
+        "constantsAreNotAccesses",
+        "cycle",
+        "interfaces",
+        "superinterfaces",
+    ];
     for name in traces {
         let Some(Value::Long(trace)) = scenario(&mut vm, name, "()J").unwrap() else {
             panic!("{name} returned no long")

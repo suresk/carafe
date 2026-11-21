@@ -123,15 +123,27 @@ fn instruction(r: &mut Reader) -> Result<Instruction> {
         TABLESWITCH => table_switch(r, pc)?,
         LOOKUPSWITCH => lookup_switch(r, pc)?,
         INVOKEINTERFACE => {
-            let (index, count, _zero) = (r.u2()?, r.u1()?, r.u1()?);
+            let (index, count, zero) = (r.u2()?, r.u1()?, r.u1()?);
+            if count == 0 || zero != 0 {
+                return Err(bad(pc, opcode, "needs a count and then a zero byte"));
+            }
             Operand::Interface { index, count }
         }
         INVOKEDYNAMIC => {
-            let (index, _zeros) = (r.u2()?, r.u2()?);
+            let (index, zeros) = (r.u2()?, r.u2()?);
+            if zeros != 0 {
+                return Err(bad(pc, opcode, "needs two zero bytes after its index"));
+            }
             Operand::Dynamic(index)
         }
-        NEWARRAY => Operand::ArrayType(r.u1()?),
-        MULTIANEWARRAY => Operand::MultiArray { index: r.u2()?, dimensions: r.u1()? },
+        NEWARRAY => match r.u1()? {
+            atype @ 4..=11 => Operand::ArrayType(atype),
+            atype => return Err(bad(pc, opcode, &format!("has array type {atype}"))),
+        },
+        MULTIANEWARRAY => match (r.u2()?, r.u1()?) {
+            (_, 0) => return Err(bad(pc, opcode, "has 0 dimensions")),
+            (index, dimensions) => Operand::MultiArray { index, dimensions },
+        },
         WIDE => return wide(r, pc),
         JSR | RET | JSR_W => {
             return Err(bad(pc, opcode, "is not allowed after Java 6"));
@@ -166,6 +178,7 @@ fn wide(r: &mut Reader, pc: usize) -> Result<Instruction> {
     let operand = match opcode {
         ILOAD..=ALOAD | ISTORE..=ASTORE => Operand::Local(r.u2()?),
         IINC => Operand::Iinc { local: r.u2()?, delta: r.u2()? as i16 },
+        RET => return Err(bad(pc + 1, opcode, "is not allowed after Java 6")),
         _ => return Err(bad(pc + 1, opcode, "cannot follow wide")),
     };
     Ok(Instruction { pc: pc as u16, opcode, wide: true, operand })

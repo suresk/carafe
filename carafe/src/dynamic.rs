@@ -76,7 +76,7 @@ pub enum Piece {
 impl Vm {
     // @listing invoke-dynamic
     /// `invokedynamic`: links the call site the first time the instruction
-    /// runs, and then does what the call site says.
+    /// runs, and then executes the call site.
     pub(crate) fn invoke_dynamic(&mut self, index: u16, pc: u16) -> Result<()> {
         let frame = self.frames.last().expect("a frame");
         let (class, key) = (frame.class.clone(), (frame.method, pc));
@@ -133,6 +133,7 @@ impl Vm {
         match (method.class, method.name) {
             ("java/lang/invoke/StringConcatFactory", "makeConcatWithConstants") => {
                 concat_site(pool, &b.args, descriptor)
+                    .map_err(|error| self.bootstrap_failure(error))
             }
             // @hide
             (
@@ -155,48 +156,94 @@ impl Vm {
             ))),
         }
     }
+
+    /// The error the JDK's `BootstrapMethodInvoker` makes of an exception
+    /// that a bootstrap method throws: a `BootstrapMethodError` with the
+    /// exception as its cause.
+    fn bootstrap_failure(&mut self, error: Error) -> Error {
+        let Error::Exception { class, message } = error else { return error };
+        let m = "bootstrap method initialization exception";
+        if self.boot_dirs == 0 {
+            return linkage("java/lang/BootstrapMethodError", m.to_string());
+        }
+        let wrapped = (|| {
+            let cause = self.exception(class, message)?;
+            self.heap.roots.push(cause);
+            let error =
+                self.exception("java/lang/BootstrapMethodError", Some(m.into()));
+            let cause = self.heap.roots.pop().expect("pushed above");
+            let (error, throwable) = (error?, self.load("java/lang/Throwable")?);
+            let cause = Value::Ref(cause);
+            self.put(&throwable, error, "cause", "Ljava/lang/Throwable;", cause)?;
+            self.thrown(error)
+        })();
+        wrapped.unwrap_or_else(|failure| failure)
+    }
     // @end
 }
 
 // @listing concat-site
 /// The call site of `makeConcatWithConstants`, from its recipe: in the
 /// recipe, `\u{1}` is the next argument, `\u{2}` the next constant among
-/// the other static arguments, and anything else is text.
+/// the other static arguments, and anything else is text. A recipe that
+/// doesn't fit the descriptor or the constants is a `StringConcatException`
+/// with the JDK's message, which `link` wraps.
 fn concat_site(
     pool: &ConstantPool,
     statics: &[u16],
     descriptor: MethodDescriptor,
 ) -> Result<CallSite> {
-    // HotSpot's error, whose cause would be a StringConcatException.
-    let error = |m: String| linkage("java/lang/BootstrapMethodError", m);
+    let error = |m: String| {
+        let class = "java/lang/invoke/StringConcatException";
+        Error::Exception { class, message: Some(m) }
+    };
+    let params = descriptor.params.len();
+    let arguments = |wanted: usize| {
+        error(format!(
+            "Mismatched number of concat arguments: recipe wants {wanted} \
+             arguments, but signature provides {params}"
+        ))
+    };
     let Some((&recipe, constants)) = statics.split_first() else {
+        // javac always passes a recipe, so this text is carafe's own.
         return Err(error("no recipe".to_string()));
     };
-    let mut constants = constants.iter();
-    let (mut pieces, mut text, mut arg) = (Vec::new(), Vec::new(), 0);
+    let mismatch = |wanted: usize| {
+        error(format!(
+            "Mismatched number of concat constants: recipe wants {wanted} \
+             constants, but only {} are passed",
+            constants.len()
+        ))
+    };
+    let (mut pieces, mut text, mut arg, mut used) = (Vec::new(), Vec::new(), 0, 0);
     for unit in string(pool, recipe)? {
         match unit {
+            1 if arg == params => return Err(arguments(arg)),
             1 => {
-                pieces.push(Piece::Text(std::mem::take(&mut text)));
+                if !text.is_empty() {
+                    pieces.push(Piece::Text(std::mem::take(&mut text)));
+                }
                 pieces.push(Piece::Arg(arg));
                 arg += 1;
             }
-            2 => match constants.next() {
-                Some(&constant) => text.extend(string(pool, constant)?),
-                None => return Err(error("too few constants".to_string())),
+            2 => match constants.get(used) {
+                Some(&constant) => {
+                    text.extend(string(pool, constant)?);
+                    used += 1;
+                }
+                None => return Err(mismatch(used)),
             },
             unit => text.push(unit),
         }
     }
-    pieces.push(Piece::Text(text));
-    pieces.retain(|p| *p != Piece::Text(Vec::new()));
-    if arg != descriptor.params.len() {
-        let m = format!(
-            "Mismatched number of concat arguments: recipe wants {arg} \
-                         arguments, but signature provides {}",
-            descriptor.params.len()
-        );
-        return Err(error(m));
+    if arg != params {
+        return Err(arguments(arg));
+    }
+    if used < constants.len() {
+        return Err(mismatch(used));
+    }
+    if !text.is_empty() {
+        pieces.push(Piece::Text(text));
     }
     Ok(CallSite::Concat { pieces, args: descriptor.params })
 }
@@ -225,14 +272,18 @@ impl Vm {
         let Some(base) = self.frames[at].stack.len().checked_sub(slots) else {
             return Err(Error::Verify("invokedynamic underflows the stack".into()));
         };
+        let mut offsets = Vec::with_capacity(args.len());
+        let mut slot = base;
+        for ty in args {
+            offsets.push(slot);
+            slot += ty.slots();
+        }
         let mut units = Vec::new();
         for piece in pieces {
             match *piece {
                 Piece::Text(ref text) => units.extend_from_slice(text),
                 Piece::Arg(n) => {
-                    let slot =
-                        base + args[..n].iter().map(|t| t.slots()).sum::<usize>();
-                    let value = self.frames[at].stack[slot];
+                    let value = self.frames[at].stack[offsets[n]];
                     units.extend(self.value_of(&args[n], value)?);
                 }
             }
@@ -243,22 +294,30 @@ impl Vm {
     }
 
     /// A value of type `ty` as text, made by the JDK's `String.valueOf` for
-    /// the type, as the JDK's own concatenation does: `valueOf(int)` for a
-    /// `byte` or a `short`, and `valueOf(Object)` for any reference.
+    /// the type, which produces the characters JLS 15.18.1 specifies, as the
+    /// JDK's own concatenation does: `valueOf(int)` for a `byte` or a
+    /// `short`, and `valueOf(Object)` for any reference.
     pub(crate) fn value_of(
         &mut self,
         ty: &FieldType,
         value: Value,
     ) -> Result<Vec<u16>> {
         let descriptor = match ty {
-            FieldType::Object(_) | FieldType::Array(_) => "Ljava/lang/Object;",
-            FieldType::Byte | FieldType::Short => "I",
-            other => &other.descriptor(),
+            FieldType::Object(_) | FieldType::Array(_) => {
+                "(Ljava/lang/Object;)Ljava/lang/String;"
+            }
+            FieldType::Byte | FieldType::Short | FieldType::Int => {
+                "(I)Ljava/lang/String;"
+            }
+            FieldType::Boolean => "(Z)Ljava/lang/String;",
+            FieldType::Char => "(C)Ljava/lang/String;",
+            FieldType::Long => "(J)Ljava/lang/String;",
+            FieldType::Float => "(F)Ljava/lang/String;",
+            FieldType::Double => "(D)Ljava/lang/String;",
         };
-        let descriptor = format!("({descriptor})Ljava/lang/String;");
         let string = self.load("java/lang/String")?;
         let Some(Value::Ref(s)) =
-            self.invoke(&string, "valueOf", &descriptor, &[value])?
+            self.invoke(&string, "valueOf", descriptor, &[value])?
         else {
             unreachable!("valueOf returns a String")
         };

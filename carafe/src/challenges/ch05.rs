@@ -34,9 +34,9 @@ pub fn recursive(class: &ClassFile) -> Result<BTreeSet<String>> {
     let graph = call_graph(class)?;
     let own = format!("{}.", class.this_class);
     let mut found = BTreeSet::new();
-    for start in graph.keys() {
+    for (start, callees) in &graph {
         let mut seen = BTreeSet::new();
-        let mut work: Vec<&String> = graph[start].iter().collect();
+        let mut work: Vec<&String> = callees.iter().collect();
         while let Some(callee) = work.pop() {
             let Some(name) = callee.strip_prefix(&own) else { continue };
             if name == start {

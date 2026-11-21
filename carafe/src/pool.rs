@@ -181,13 +181,15 @@ impl ConstantPool {
     }
     // @end
 
-    // @listing pool-get
-    /// A pool of these entries, the first of which must be `Unusable`, as a
-    /// class carafe writes itself has.
+    // @listing pool-new
+    /// A pool of these entries, which carafe builds rather than reads from a
+    /// class file. The first entry must be `Unusable`, as index 0 is.
     pub(crate) fn new(entries: Vec<Constant>) -> ConstantPool {
         ConstantPool { entries }
     }
+    // @end
 
+    // @listing pool-get
     /// `constant_pool_count`: one more than the highest index.
     pub fn count(&self) -> u16 {
         self.entries.len() as u16
@@ -202,13 +204,12 @@ impl ConstantPool {
             Some(c) => Ok(c),
         }
     }
-
     // @end
 
     // @listing pool-iter
     /// Every usable entry with its index.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &Constant)> {
-        let usable = |(_, c): &(usize, &Constant)| *c != &Constant::Unusable;
+        let usable = |(_, c): &(usize, &Constant)| !matches!(c, Constant::Unusable);
         self.entries.iter().enumerate().filter(usable).map(|(i, c)| (i as u16, c))
     }
     // @end
@@ -297,22 +298,20 @@ impl ConstantPool {
 // @listing quote
 /// `name:descriptor`, with `javap`'s quotes around `<init>` and `<clinit>`.
 fn quote(name: &str, descriptor: &str) -> String {
-    match name.starts_with('<') {
-        true => format!("\"{name}\":{descriptor}"),
-        false => format!("{name}:{descriptor}"),
+    if name.starts_with('<') {
+        format!("\"{name}\":{descriptor}")
+    } else {
+        format!("{name}:{descriptor}")
     }
 }
 
 /// A class name, in quotes if it is an array class's: `"[I"`.
 fn quote_class(name: &str) -> String {
-    match name.starts_with('[') {
-        true => format!("\"{name}\""),
-        false => name.to_string(),
-    }
+    if name.starts_with('[') { format!("\"{name}\"") } else { name.to_string() }
 }
 
-/// UTF-16 as text, with control characters and unpaired surrogates written
-/// as `javap` writes them, `\u0000`.
+/// UTF-16 as text, with control characters written as `javap` writes them,
+/// `\u0000`, and unpaired surrogates escaped the same way, which `javap` doesn't do.
 fn escape(units: &[u16]) -> String {
     let unit = |u: u32| format!("\\u{u:04x}");
     char::decode_utf16(units.iter().copied())
@@ -339,11 +338,10 @@ impl fmt::Display for ConstantPool {
             let (tag, operands) = c.describe();
             let shown = self.comment(index, c).unwrap_or_else(|e| e.to_string());
             let index = format!("#{index}");
-            match shown.is_empty() {
-                true => writeln!(f, "{index:>4} = {tag:<11} {operands}")?,
-                false => {
-                    writeln!(f, "{index:>4} = {tag:<11} {operands:<7} // {shown}")?
-                }
+            if shown.is_empty() {
+                writeln!(f, "{index:>4} = {tag:<11} {operands}")?;
+            } else {
+                writeln!(f, "{index:>4} = {tag:<11} {operands:<7} // {shown}")?;
             }
         }
         Ok(())

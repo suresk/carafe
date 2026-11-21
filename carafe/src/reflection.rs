@@ -6,9 +6,10 @@ use crate::error::{Error, Result};
 use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::Ref;
-use crate::interpreter::{Vm, non_null, select};
+use crate::interpreter::{Vm, abstract_method, non_null, select};
 use crate::lambda::wrapper;
 use crate::reader::Reader;
+use crate::resolve::dotted;
 use crate::value::Value;
 use std::rc::Rc;
 
@@ -159,7 +160,8 @@ impl Vm {
 
 // @listing method-init
 /// HotSpot's `JVM_RECOGNIZED_METHOD_MODIFIERS`: the access flags a
-/// `Method` reports, which leave out `ACC_SUPER`'s bit and the rest.
+/// `Method` reports, public through synthetic, without `0x0200`, which no
+/// method flag uses, and nothing above `ACC_SYNTHETIC`.
 const RECOGNIZED_METHOD_MODIFIERS: u16 = 0x1dff;
 
 /// The classes in a method's `Exceptions` attribute, its `throws` clause.
@@ -178,9 +180,9 @@ fn checked_exceptions(class: &Class, index: usize) -> Result<Vec<FieldType>> {
 
 // @listing invoke0
 /// `NativeAccessor.invoke0(Method, Object, Object[])`: calls the method a
-/// `Method` stands for, with the arguments unboxed, and returns the result
-/// boxed. An exception the method throws comes out wrapped in an
-/// `InvocationTargetException`.
+/// `Method` represents, on a receiver that must be an instance of its class,
+/// with the arguments unboxed, and returns the result boxed. An exception
+/// the method throws comes out wrapped in an `InvocationTargetException`.
 pub(crate) fn invoke0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let [Value::Ref(method), Value::Ref(receiver), Value::Ref(arguments)] = *args
     else {
@@ -191,11 +193,30 @@ pub(crate) fn invoke0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
     let ret = class.file.methods[slot].ty.ret.clone();
     let is_static = flags.has(AccessFlags::STATIC);
     let receiver = if is_static { None } else { Some(non_null(receiver)?) };
+    if let Some(r) = receiver {
+        let of = vm.class_of(r)?;
+        if !vm.is_assignable(&of, &class)? {
+            let m = format!(
+                "object of type {} is not an instance of {}",
+                dotted(&of.file.this_class),
+                dotted(&class.file.this_class)
+            );
+            let class = "java/lang/IllegalArgumentException";
+            return Err(Error::Exception { class, message: Some(m) });
+        }
+    }
     let values = vm.arguments(&class, slot, receiver, arguments)?;
     let (target_class, target) = match receiver {
         Some(r) if !flags.has(AccessFlags::PRIVATE) => {
             let receiver = vm.class_of(r)?;
-            select(&receiver, &class, slot).expect("a method to select")
+            match select(&receiver, &class, slot) {
+                Some((c, m))
+                    if !c.file.methods[m].access_flags.has(AccessFlags::ABSTRACT) =>
+                {
+                    (c, m)
+                }
+                _ => return Err(abstract_method(&receiver, &class, slot)),
+            }
         }
         _ => (class.clone(), slot),
     };
@@ -210,8 +231,8 @@ pub(crate) fn invoke0(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
 }
 
 impl Vm {
-    /// The class and method index that a `Method` or `Constructor` stands
-    /// for, from its `clazz` and `slot` fields.
+    /// The class and method index that a `Method` or `Constructor`
+    /// represents, from its `clazz` and `slot` fields.
     pub(crate) fn member_of(
         &mut self,
         member: Ref,
@@ -271,21 +292,39 @@ impl Vm {
 impl Vm {
     // @listing boxing
     /// An argument for a parameter of type `ty`: a reference as it is, or a
-    /// primitive from its wrapper object, which must be the right wrapper.
+    /// primitive from a wrapper object whose primitive widens to `ty`.
     fn unbox(&mut self, ty: &FieldType, arg: Ref) -> Result<Value> {
-        let Some((wrapper_class, _)) = wrapper(ty) else {
+        if wrapper(ty).is_none() {
             return Ok(Value::Ref(arg));
-        };
+        }
         let mismatch = || Error::Exception {
             class: "java/lang/IllegalArgumentException",
             message: Some("argument type mismatch".into()),
         };
-        if arg == Ref::NULL || self.class_of(arg)?.file.this_class != wrapper_class {
-            return Err(mismatch());
+        if arg == Ref::NULL {
+            // HotSpot's accessor wraps the NullPointerException of unboxing.
+            let m = Some("java.lang.NullPointerException".into());
+            let class = "java/lang/IllegalArgumentException";
+            return Err(Error::Exception { class, message: m });
         }
         let class = self.class_of(arg)?;
-        let slot = class.field("value", &ty.descriptor())?;
-        Ok(self.heap.read(arg.0 + slot.offset, &slot.ty))
+        let primitives = [
+            FieldType::Boolean,
+            FieldType::Byte,
+            FieldType::Char,
+            FieldType::Short,
+            FieldType::Int,
+            FieldType::Long,
+            FieldType::Float,
+            FieldType::Double,
+        ];
+        let boxed = primitives.into_iter().find(|p| {
+            wrapper(p).is_some_and(|(name, _)| name == class.file.this_class)
+        });
+        let Some(from) = boxed else { return Err(mismatch()) };
+        let slot = class.field("value", &from.descriptor())?;
+        let value = self.heap.read(arg.0 + slot.offset, &slot.ty);
+        widened(value, &from, ty).ok_or_else(mismatch)
     }
 
     /// A result as `Method.invoke` returns it: `null` for `void`, a primitive
@@ -320,14 +359,47 @@ impl Vm {
         self.put(&class, wrapper, "target", "Ljava/lang/Throwable;", target)?;
         self.thrown(wrapper)
     }
-    // @end
 }
+
+/// `value`, of the primitive type `from`, widened to `to` as JLS 5.1.2
+/// allows, or `None` if it can't be: `boolean` only to itself, `byte` to
+/// `short` and up, `short` and `char` to `int` and up, and so on.
+fn widened(value: Value, from: &FieldType, to: &FieldType) -> Option<Value> {
+    use FieldType::*;
+    if from == to {
+        return Some(value);
+    }
+    let rank = |t: &FieldType| match t {
+        Byte => Some(0),
+        Short | Char => Some(1),
+        Int => Some(2),
+        Long => Some(3),
+        Float => Some(4),
+        Double => Some(5),
+        _ => None,
+    };
+    if rank(from)? >= rank(to)? || *to == Char {
+        return None;
+    }
+    Some(match (value, to) {
+        (Value::Int(v), Short | Int) => Value::Int(v),
+        (Value::Int(v), Long) => Value::Long(v.into()),
+        (Value::Int(v), Float) => Value::Float(v as f32),
+        (Value::Int(v), Double) => Value::Double(v.into()),
+        (Value::Long(v), Float) => Value::Float(v as f32),
+        (Value::Long(v), Double) => Value::Double(v as f64),
+        (Value::Float(v), Double) => Value::Double(v.into()),
+        _ => return None,
+    })
+}
+// @end
 
 // @listing caller-class
 /// `Reflection.getCallerClass()`: the class of the method that called the
-/// caller-sensitive method asking, which is the top frame, since a native
-/// has no frame of its own. Frames of reflection itself are skipped, so
-/// that a method called through `Method.invoke` sees its real caller.
+/// caller-sensitive method asking, which is the frame below the top one: a
+/// native has no frame, so the top frame is the caller-sensitive method
+/// itself. Frames of reflection itself are skipped, so that a method called
+/// through `Method.invoke` sees its real caller.
 pub(crate) fn get_caller_class(vm: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
     let caller = vm.frames.iter().rev().skip(1).find(|f| !is_reflection(f));
     let Some(class) = caller.map(|f| f.class.clone()) else {
@@ -340,7 +412,7 @@ pub(crate) fn get_caller_class(vm: &mut Vm, _: &[Value]) -> Result<Option<Value>
 /// accessors in `jdk.internal.reflect`.
 fn is_reflection(frame: &Frame) -> bool {
     let class = &frame.class.file.this_class;
-    (class == "java/lang/reflect/Method" && frame.name_is("invoke"))
+    (class == "java/lang/reflect/Method" && frame.name() == "invoke")
         || class.starts_with("jdk/internal/reflect/")
 }
 // @end
@@ -562,13 +634,13 @@ pub(crate) fn get_declared_fields(
     vm: &mut Vm,
     args: &[Value],
 ) -> Result<Option<Value>> {
-    let [Value::Ref(mirror), Value::Int(public_only)] = *args else { unreachable!() };
+    let [Value::Ref(mirror), Value::Int(public_only)] = *args else {
+        unreachable!("checked descriptor")
+    };
     let class = vm.class_of_mirror(mirror)?;
-    let fields: Vec<usize> = (0..class.file.fields.len())
-        .filter(|&f| {
-            let public = class.file.fields[f].access_flags.has(AccessFlags::PUBLIC);
-            public_only == 0 || public
-        })
+    let fields: Vec<usize> = (class.file.fields.iter().enumerate())
+        .filter(|(_, f)| public_only == 0 || f.access_flags.has(AccessFlags::PUBLIC))
+        .map(|(i, _)| i)
         .collect();
     let field_type = FieldType::Object("java/lang/reflect/Field".into());
     let array = vm.heap.new_array(&field_type, fields.len() as u32)?;
@@ -584,9 +656,9 @@ pub(crate) fn get_declared_fields(
 
 impl Vm {
     /// A `java.lang.reflect.Field` for field `index` of `class`, made by its
-    /// constructor: declaring class, name, type, modifiers, whether it is a
-    /// final that can't be changed even by reflection, slot, generic
-    /// signature and annotations.
+    /// constructor: declaring class, name, type, modifiers, whether it is
+    /// trusted final (carafe: static final only; HotSpot also trusts record
+    /// and hidden-class finals), slot, generic signature and annotations.
     fn reflect_field(&mut self, class: &Rc<Class>, index: usize) -> Result<Ref> {
         let field = &class.file.fields[index];
         let (name, ty, flags) =

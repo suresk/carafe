@@ -38,7 +38,8 @@ impl AccessFlags {
             .filter(|&(bit, name)| self.has(bit) && !name.is_empty())
             .map(|(_, name)| format!("ACC_{name}"))
             .collect();
-        format!("({:#06x}) {}", self.0, set.join(", ")).trim_end().to_string()
+        let bits = format!("({:#06x})", self.0);
+        if set.is_empty() { bits } else { format!("{bits} {}", set.join(", ")) }
     }
 }
 // @end

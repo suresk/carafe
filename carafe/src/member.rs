@@ -51,7 +51,13 @@ impl Field {
     pub(crate) fn read(r: &mut Reader, pool: &ConstantPool) -> Result<Field> {
         let (access_flags, name, descriptor, mut attributes) = read_member(r, pool)?;
         let ty = FieldType::parse(&descriptor)?;
-        let constant_value = match take_one(&mut attributes, "ConstantValue")? {
+        // A JVM ignores the attribute on an instance field (JVMS 4.7.2).
+        let attribute = if access_flags.has(AccessFlags::STATIC) {
+            take_one(&mut attributes, "ConstantValue")?
+        } else {
+            None
+        };
+        let constant_value = match attribute {
             None => None,
             Some(Attribute { info, .. }) => {
                 let Ok(index) = <[u8; 2]>::try_from(&info[..]) else {

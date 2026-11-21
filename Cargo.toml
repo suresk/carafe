@@ -3,7 +3,8 @@ members = ["carafe", "xtask"]
 resolver = "3"
 
 # Chapter 23: one unit of code generation and link-time optimization let
-# the compiler inline across modules, which makes the interpreter faster.
+# the compiler inline across modules: a slightly faster interpreter, at the
+# cost of slower release builds.
 [profile.release]
 codegen-units = 1
 lto = true

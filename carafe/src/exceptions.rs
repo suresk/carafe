@@ -5,24 +5,29 @@ use crate::error::{Error, Result};
 use crate::frame::Frame;
 use crate::heap::Ref;
 use crate::interpreter::Vm;
+use crate::loader::linkage;
 use crate::reader::Reader;
 use crate::resolve::dotted;
 use crate::value::Value;
 use std::rc::Rc;
 
 // @listing trace-frame
-/// One line of a stack trace: a method, and the instruction it was executing.
+/// One line of a stack trace: a method, and the instruction it was executing,
+/// which a native method doesn't have.
 #[derive(Clone)]
 pub struct TraceFrame {
     pub class: Rc<Class>,
     pub method: usize,
-    pub pc: u16,
+    pub pc: Option<u16>,
 }
 
+/// Two frames are equal when they show the same line of the same method,
+/// as `StackTraceElement.equals` compares them, even at different pcs.
 impl PartialEq for TraceFrame {
     fn eq(&self, other: &TraceFrame) -> bool {
         Rc::ptr_eq(&self.class, &other.class)
-            && (self.method, self.pc) == (other.method, other.pc)
+            && self.method == other.method
+            && self.line_number() == other.line_number()
     }
 }
 
@@ -54,10 +59,7 @@ impl Vm {
         self.heap.roots.push(exception);
         let caught = self.unwind(depth);
         let exception = self.heap.roots.pop().expect("pushed above");
-        match caught? {
-            true => Ok(()),
-            false => Err(self.thrown(exception)?),
-        }
+        if caught? { Ok(()) } else { Err(self.thrown(exception)?) }
     }
 
     /// Pops frames above `depth` until one has a handler for the exception on
@@ -73,6 +75,9 @@ impl Vm {
                 frame.next = next;
                 return Ok(true);
             }
+            // A method that exited its own monitor keeps the exception it
+            // threw, as JVMS 2.11.10's structured locking allows.
+            self.exit_method_monitor(self.frames.len() - 1).ok();
             self.frames.pop();
         }
         Ok(false)
@@ -116,9 +121,9 @@ impl Vm {
         class: &str,
         message: Option<String>,
     ) -> Result<Ref> {
-        self.headroom = HEADROOM;
+        let saved = std::mem::replace(&mut self.headroom, HEADROOM);
         let exception = self.construct(class, message);
-        self.headroom = 0;
+        self.headroom = saved;
         exception
     }
 
@@ -176,10 +181,10 @@ impl Vm {
         name: &str,
     ) -> Result<Ref> {
         let throwable = self.load("java/lang/Throwable")?;
-        let ty = if name == "cause" {
-            "Ljava/lang/Throwable;"
-        } else {
-            "Ljava/lang/String;"
+        let ty = match name {
+            "cause" => "Ljava/lang/Throwable;",
+            "detailMessage" => "Ljava/lang/String;",
+            _ => unreachable!("a reference field of Throwable: {name}"),
         };
         let slot = throwable.field(name, ty)?;
         match self.heap.read(exception.0 + slot.offset, &slot.ty) {
@@ -191,9 +196,11 @@ impl Vm {
 }
 
 // @listing fill-in
-/// `Throwable.fillInStackTrace(int)`: records the frames on the stack as the
-/// exception's stack trace, without the frames that are making it, which
-/// are `fillInStackTrace` itself and the constructors of the exception.
+/// `Throwable.fillInStackTrace(int)`: records the method calls in progress
+/// as the exception's stack trace, without the ones that are making it,
+/// which are `fillInStackTrace` itself and the constructors of the exception,
+/// and sets `Throwable`'s `backtrace` and `depth`, which tell
+/// `getStackTrace` that there is a trace to read.
 pub(crate) fn fill_in_stack_trace(
     vm: &mut Vm,
     args: &[Value],
@@ -202,30 +209,57 @@ pub(crate) fn fill_in_stack_trace(
         unreachable!("checked descriptor")
     };
     let class = vm.class_of(exception)?;
-    let mut frames = vm.frames.iter().rev().peekable();
-    while frames.next_if(|f| f.name_is("fillInStackTrace")).is_some() {}
-    let mut trace = Vec::new();
-    let mut constructors = true;
-    for frame in frames {
-        if constructors
-            && frame.name_is("<init>")
-            && is_subclass(&class, &frame.class)
-        {
-            continue;
-        }
-        constructors = false;
-        let pc = frame.code[frame.next - 1].pc;
-        trace.push(TraceFrame {
-            class: frame.class.clone(),
-            method: frame.method,
-            pc,
-        });
-        if trace.len() == MAX_TRACE {
-            break;
-        }
-    }
+    let mut frames = vm.stack().into_iter().rev().peekable();
+    let making =
+        |f: &TraceFrame, name| f.name_is(name) && is_subclass(&class, &f.class);
+    while frames.next_if(|f| making(f, "fillInStackTrace")).is_some() {}
+    while frames.next_if(|f| making(f, "<init>")).is_some() {}
+    let trace: Vec<TraceFrame> = frames.take(MAX_TRACE).collect();
+    let throwable = vm.load("java/lang/Throwable")?;
+    let depth = Value::Int(trace.len() as i32);
+    vm.put(&throwable, exception, "depth", "I", depth)?;
+    // Any object will do as the marker; the trace itself stays in Rust.
+    let marker = Value::Ref(exception);
+    vm.put(&throwable, exception, "backtrace", "Ljava/lang/Object;", marker)?;
     vm.backtraces.insert(exception, trace);
     Ok(Some(Value::Ref(exception)))
+}
+
+impl Vm {
+    /// The method calls in progress, bottom first: each frame at the
+    /// instruction it is executing, and each native that is running above
+    /// the frame that called it.
+    fn stack(&self) -> Vec<TraceFrame> {
+        let mut natives = self.native_frames.iter().peekable();
+        let mut stack = Vec::new();
+        for (i, frame) in self.frames.iter().enumerate() {
+            while let Some((_, native)) = natives.next_if(|(at, _)| *at <= i) {
+                stack.push(native.clone());
+            }
+            // A frame that hasn't started yet is at its first instruction.
+            let pc = frame.next.checked_sub(1).map_or(0, |n| frame.code[n].pc);
+            let (class, method) = (frame.class.clone(), frame.method);
+            stack.push(TraceFrame { class, method, pc: Some(pc) });
+        }
+        stack.extend(natives.map(|(_, native)| native.clone()));
+        stack
+    }
+
+    /// An error that a native returned, made an exception object while the
+    /// native is still on the stack, so that the trace starts with it.
+    pub(crate) fn native_error(&mut self, error: Error) -> Error {
+        match error {
+            Error::Exception { class, message }
+                if self.boot_dirs > 0 && self.headroom == 0 =>
+            {
+                let thrown = self.exception(class, message);
+                match thrown.and_then(|exception| self.thrown(exception)) {
+                    Ok(error) | Err(error) => error,
+                }
+            }
+            other => other,
+        }
+    }
 }
 
 /// Whether `class` is `ancestor` or a subclass of it.
@@ -241,12 +275,77 @@ fn is_subclass(class: &Rc<Class>, ancestor: &Rc<Class>) -> bool {
 }
 // @end
 
-impl Frame {
+// @listing stack-trace-elements
+/// `StackTraceElement.initStackTraceElements(elements, backtrace, depth)`:
+/// fills in the elements that `getStackTrace` made from the trace that
+/// `fill_in_stack_trace` recorded, under the exception it left in
+/// `backtrace`. Java's `computeFormat` then reads `declaringClassObject`.
+pub(crate) fn init_stack_trace_elements(
+    vm: &mut Vm,
+    args: &[Value],
+) -> Result<Option<Value>> {
+    let [Value::Ref(elements), Value::Ref(backtrace), Value::Int(depth)] = *args
+    else {
+        unreachable!("checked descriptor")
+    };
+    let trace = vm.backtraces.get(&backtrace).cloned().unwrap_or_default();
+    let elements = crate::interpreter::non_null(elements)?;
+    let count = vm.heap.array_length(elements) as usize;
+    let count = count.min(trace.len()).min(usize::try_from(depth).unwrap_or(0));
+    vm.heap.roots.push(elements); // held across the allocations below
+    let filled = trace[..count]
+        .iter()
+        .enumerate()
+        .try_for_each(|(i, frame)| init_element(vm, i as i32, frame));
+    vm.heap.roots.pop();
+    filled.map(|_| None)
+}
+
+/// Fills in element `i` of the array on top of `heap.roots` from `frame`.
+fn init_element(vm: &mut Vm, i: i32, frame: &TraceFrame) -> Result<()> {
+    let class = vm.load("java/lang/StackTraceElement")?;
+    let set = |vm: &mut Vm, name: &str, ty: &str, value: Value| {
+        let array = *vm.heap.roots.last().expect("pushed by the caller");
+        let element = crate::unsafe_access::object();
+        let Value::Ref(element) = vm.heap.read(vm.heap.element(array, i)?, &element)
+        else {
+            unreachable!("a StackTraceElement[]")
+        };
+        vm.put(&class, element, name, ty, value)
+    };
+    let mirror = vm.mirror(&frame.class)?;
+    set(vm, "declaringClassObject", "Ljava/lang/Class;", Value::Ref(mirror))?;
+    let method = &frame.class.file.methods[frame.method];
+    let strings = [
+        ("declaringClass", Some(dotted(&frame.class.file.this_class))),
+        ("methodName", Some(method.name.clone())),
+        ("fileName", source_file(&frame.class)),
+        ("moduleName", frame.class.boot.then(|| "java.base".to_string())),
+    ];
+    for (name, text) in strings {
+        if let Some(text) = text {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let string = vm.new_string(&units)?;
+            set(vm, name, "Ljava/lang/String;", Value::Ref(string))?;
+        }
+    }
+    // -2 marks a native method, and -1 an unknown line.
+    let line = match frame.pc {
+        None => -2,
+        Some(_) => frame.line_number().map_or(-1, i32::from),
+    };
+    set(vm, "lineNumber", "I", Value::Int(line))
+}
+// @end
+
+// @listing name-is
+impl TraceFrame {
     /// Whether this frame's method is called `name`.
-    pub(crate) fn name_is(&self, name: &str) -> bool {
+    fn name_is(&self, name: &str) -> bool {
         self.class.file.methods[self.method].name == name
     }
 }
+// @end
 
 // @listing trace-line
 impl TraceFrame {
@@ -258,6 +357,7 @@ impl TraceFrame {
         let module = if self.class.boot { "java.base/" } else { "" };
         let method = &self.class.file.methods[self.method].name;
         let place = match (source_file(&self.class), self.line_number()) {
+            _ if self.pc.is_none() => "Native Method".to_string(),
             (Some(file), Some(line)) => format!("{file}:{line}"),
             (Some(file), None) => file,
             _ => "Unknown Source".to_string(),
@@ -266,15 +366,16 @@ impl TraceFrame {
     }
 
     /// The source line of the instruction, from the `LineNumberTable`s: the
-    /// line of the entry with the greatest start that is not after it.
-    fn line_number(&self) -> Option<u16> {
+    /// line of the first entry with the greatest start that is not after it.
+    pub(crate) fn line_number(&self) -> Option<u16> {
+        let pc = self.pc?;
         let code = self.class.file.methods[self.method].code.as_ref()?;
         let mut best: Option<(u16, u16)> = None;
         for table in code.attributes.iter().filter(|a| a.name == "LineNumberTable") {
             let mut r = Reader::new(&table.info);
             for _ in 0..r.u2().ok()? {
                 let (start, line) = (r.u2().ok()?, r.u2().ok()?);
-                if start <= self.pc && best.is_none_or(|(s, _)| start >= s) {
+                if start <= pc && best.is_none_or(|(s, _)| start > s) {
                     best = Some((start, line));
                 }
             }
@@ -295,12 +396,15 @@ impl Vm {
     // @listing report
     /// What HotSpot prints when `exception` ends the program: `Exception in
     /// thread "main"`, the exception and its stack trace, then each cause
-    /// with the frames it doesn't share with the one before.
+    /// with the frames it doesn't share with the one before, until a cause
+    /// that was printed already.
     pub fn report(&mut self, exception: Ref) -> Result<String> {
         let mut out = String::from("Exception in thread \"main\" ");
         let mut exception = exception;
         let mut enclosing: Vec<TraceFrame> = Vec::new();
+        let mut printed = Vec::new();
         loop {
+            printed.push(exception);
             out += &self.java_to_string(exception)?;
             out += "\n";
             let trace = self.backtraces.get(&exception).cloned().unwrap_or_default();
@@ -314,10 +418,14 @@ impl Vm {
                 out += &format!("\t... {common} more\n");
             }
             let cause = self.java_cause(exception)?;
-            if cause == Ref::NULL || cause == exception {
+            if cause == Ref::NULL {
                 return Ok(out);
             }
             out += "Caused by: ";
+            if printed.contains(&cause) {
+                let cause = self.java_to_string(cause)?;
+                return Ok(out + &format!("[CIRCULAR REFERENCE: {cause}]\n"));
+            }
             (exception, enclosing) = (cause, trace);
         }
     }
@@ -347,7 +455,7 @@ impl Vm {
             cause,
         )? {
             Some(Value::Ref(cause)) => Ok(cause),
-            _ => unreachable!("getCause returns a Throwable"),
+            _ => Ok(Ref::NULL),
         }
     }
 
@@ -363,8 +471,12 @@ impl Vm {
         let class = self.class_of(object)?;
         let owner = self.load(owner)?;
         let method = owner.method(name, descriptor)?;
-        let (class, method) =
-            crate::interpreter::select(&class, &owner, method).expect("a method");
+        let Some((class, method)) =
+            crate::interpreter::select(&class, &owner, method)
+        else {
+            let m = format!("{}.{name}{descriptor}", dotted(&class.file.this_class));
+            return Err(linkage("java/lang/AbstractMethodError", m));
+        };
         self.invoke_method(&class, method, &[Value::Ref(object)])
     }
     // @end

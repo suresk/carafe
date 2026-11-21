@@ -20,6 +20,12 @@ impl Vm {
     /// checks that `from` may refer to it.
     pub fn resolve_class(&mut self, from: &Class, name: &str) -> Result<Rc<Class>> {
         let class = self.load(name)?;
+        // @hide
+        // An array class is as accessible as its element class.
+        let name = name.trim_start_matches('[');
+        let name =
+            name.strip_prefix('L').and_then(|n| n.strip_suffix(';')).unwrap_or(name);
+        // @show
         let public = class.file.access_flags.has(AccessFlags::PUBLIC);
         if !public && package(name) != package(&from.file.this_class) {
             let m = format!(
@@ -53,7 +59,8 @@ impl Vm {
             );
             return Err(linkage("java/lang/NoSuchFieldError", m));
         };
-        check_access(from, &owner, field.access_flags, "field", &field.name)?;
+        let what = format!("field {}.{}", dotted(&owner.file.this_class), field.name);
+        check_access(from, &owner, field.access_flags, &what)?;
         Ok((owner, field))
     }
     // @end
@@ -92,7 +99,11 @@ impl Vm {
             return Err(linkage("java/lang/NoSuchMethodError", m));
         };
         let flags = owner.file.methods[method].access_flags;
-        check_access(from, &owner, flags, "method", target.name)?;
+        let what = format!(
+            "method '{}'",
+            external(&owner.file.this_class, target.name, &ty)
+        );
+        check_access(from, &owner, flags, &what)?;
         // @hide
         from.cache(index, Resolved::Method(owner.clone(), method));
         // @show
@@ -121,7 +132,7 @@ fn find_field(
 }
 
 /// The method as JVMS 5.4.3.3 looks it up: in the class and its
-/// superclasses, then in its superinterfaces (Chapter 13 refines this).
+/// superclasses, then in the superinterfaces of each of them.
 fn find_method(
     class: &Rc<Class>,
     name: &str,
@@ -134,19 +145,28 @@ fn find_method(
         }
         c = current.superclass.clone();
     }
-    let interfaces = class.interfaces.iter();
-    interfaces.filter_map(|i| find_method(i, name, descriptor)).next()
+    let mut c = Some(class.clone());
+    while let Some(current) = c {
+        let interfaces = current.interfaces.iter();
+        let found =
+            interfaces.filter_map(|i| find_method(i, name, descriptor)).next();
+        if found.is_some() {
+            return found;
+        }
+        c = current.superclass.clone();
+    }
+    None
 }
 // @end
 
 // @listing check-access
 /// JVMS 5.4.4: may code in `from` use a member of `owner` with `flags`?
+/// `what` names the member for the error: `field Rectangle.width`.
 fn check_access(
     from: &Class,
     owner: &Rc<Class>,
     flags: AccessFlags,
-    kind: &str,
-    name: &str,
+    what: &str,
 ) -> Result<()> {
     let (from_name, owner_name) = (&from.file.this_class, &owner.file.this_class);
     let same_package = package(from_name) == package(owner_name);
@@ -162,6 +182,8 @@ fn check_access(
     if allowed {
         return Ok(());
     }
+    // Only a method can be abstract; HotSpot names that first.
+    let abstract_ = if flags.has(AccessFlags::ABSTRACT) { "abstract " } else { "" };
     let visibility = if flags.has(AccessFlags::PRIVATE) {
         "private "
     } else if flags.has(AccessFlags::PROTECTED) {
@@ -170,9 +192,8 @@ fn check_access(
         ""
     };
     let m = format!(
-        "class {} tried to access {visibility}{kind} {}.{name}",
-        dotted(from_name),
-        dotted(owner_name)
+        "class {} tried to access {abstract_}{visibility}{what}",
+        dotted(from_name)
     );
     Err(linkage("java/lang/IllegalAccessError", m))
 }
@@ -256,6 +277,7 @@ impl Vm {
             return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
         let (name, descriptor) = (target.name, target.descriptor);
+        let ty = MethodDescriptor::parse(descriptor)?;
         let object = class.superclass.clone().filter(|object| {
             object.method(name, descriptor).is_ok_and(|m| {
                 let flags = object.file.methods[m].access_flags;
@@ -278,13 +300,16 @@ impl Vm {
             },
         };
         let Some((owner, method)) = found else {
-            let ty = MethodDescriptor::parse(descriptor)?;
             let m = format!("'{}'", external(target.class, name, &ty));
             return Err(linkage("java/lang/NoSuchMethodError", m));
         };
         let flags = owner.file.methods[method].access_flags;
-        check_access(from, &owner, flags, "method", name)?;
+        let what =
+            format!("method '{}'", external(&owner.file.this_class, name, &ty));
+        check_access(from, &owner, flags, &what)?;
+        // @hide
         from.cache(index, Resolved::Method(owner.clone(), method));
+        // @show
         Ok((owner, method))
     }
     // @end

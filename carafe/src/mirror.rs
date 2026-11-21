@@ -15,8 +15,8 @@ use std::rc::Rc;
 impl Vm {
     // @listing mirror
     /// The `java.lang.Class` object for `class`: one per class, created the
-    /// first time something asks for it, with the fields `Class`'s own methods
-    /// read: the modifiers, and an array's component type.
+    /// first time it is needed, with the fields `Class`'s own methods read:
+    /// the modifiers, and an array's component type.
     pub fn mirror(&mut self, class: &Rc<Class>) -> Result<Ref> {
         if class.mirror.get() != Ref::NULL {
             return Ok(class.mirror.get());
@@ -85,7 +85,7 @@ impl Vm {
 
 impl Vm {
     // @listing class-of-mirror
-    /// The class a `java.lang.Class` object stands for.
+    /// The class a `java.lang.Class` object represents.
     pub fn class_of_mirror(&self, mirror: Ref) -> Result<Rc<Class>> {
         match self.mirror_classes.get(&mirror) {
             Some(class) => Ok(class.clone()),
@@ -138,7 +138,8 @@ pub(crate) fn init_class_name(vm: &mut Vm, args: &[Value]) -> Result<Option<Valu
         Some(class) => java_name(class),
         None => {
             let primitive = vm.primitive_mirrors.iter().find(|&(_, &m)| m == mirror);
-            primitive.map(|(name, _)| name.clone()).expect("a mirror")
+            let every = "every mirror is in mirror_classes or primitive_mirrors";
+            primitive.map(|(name, _)| name.clone()).expect(every)
         }
     };
     let units: Vec<u16> = name.encode_utf16().collect();
@@ -163,18 +164,20 @@ pub(crate) fn identity_hash(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>
 // @listing modifiers
 /// The modifiers `Class.getModifiers` reports: a nested class's from its
 /// `InnerClasses` entry, which has `static`, `private` and `protected`, a
-/// top-level class's from its access flags; an array's are its component's
-/// access, `final` and `abstract`.
+/// top-level class's from its access flags; an array's are its innermost
+/// element type's access, `final` and `abstract`.
 fn modifiers(vm: &mut Vm, class: &Class) -> Result<i32> {
     let name = &class.file.this_class;
     let access = AccessFlags::PUBLIC | AccessFlags::PRIVATE | AccessFlags::PROTECTED;
-    if let Some(element) = name.strip_prefix('[') {
-        let component = match FieldType::parse(element)? {
-            FieldType::Object(c) => vm.load(&c)?.file.access_flags.0,
-            FieldType::Array(_) => vm.load(element)?.file.access_flags.0,
+    if name.starts_with('[') {
+        let element = match FieldType::parse(name.trim_start_matches('['))? {
+            FieldType::Object(c) => {
+                let element = vm.load(&c)?;
+                modifiers(vm, &element)? as u16
+            }
             _ => AccessFlags::PUBLIC,
         };
-        let flags = (component & access) | AccessFlags::FINAL | AccessFlags::ABSTRACT;
+        let flags = (element & access) | AccessFlags::FINAL | AccessFlags::ABSTRACT;
         return Ok(flags.into());
     }
     if let Some(inner) =
@@ -182,21 +185,23 @@ fn modifiers(vm: &mut Vm, class: &Class) -> Result<i32> {
     {
         let mut r = Reader::new(&inner.info);
         for _ in 0..r.u2()? {
+            // outer_class_info_index and inner_name_index aren't needed.
             let (inner_class, _, _, flags) = (r.u2()?, r.u2()?, r.u2()?, r.u2()?);
             if class.file.constant_pool.class_name(inner_class)? == name {
                 return Ok((flags & !AccessFlags::SUPER).into());
             }
         }
     }
-    Ok((class.file.access_flags.0 & !(AccessFlags::SUPER | AccessFlags::SYNTHETIC))
-        .into())
+    Ok((class.file.access_flags.0 & !AccessFlags::SUPER).into())
 }
 // @end
 
 // @listing class-natives
 /// `Class.isInstance(Object)`: whether the object is an instance of the class.
 pub(crate) fn is_instance(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
-    let [Value::Ref(mirror), Value::Ref(object)] = *args else { unreachable!() };
+    let [Value::Ref(mirror), Value::Ref(object)] = *args else {
+        unreachable!("checked descriptor")
+    };
     if object == Ref::NULL || vm.primitive_mirrors.values().any(|&m| m == mirror) {
         return Ok(Some(Value::Int(0)));
     }
@@ -211,7 +216,9 @@ pub(crate) fn is_assignable_from(
     vm: &mut Vm,
     args: &[Value],
 ) -> Result<Option<Value>> {
-    let [Value::Ref(target), Value::Ref(source)] = *args else { unreachable!() };
+    let [Value::Ref(target), Value::Ref(source)] = *args else {
+        unreachable!("checked descriptor")
+    };
     let source = crate::interpreter::non_null(source)?;
     let primitive = |vm: &Vm, m: Ref| vm.primitive_mirrors.values().any(|&p| p == m);
     if primitive(vm, target) || primitive(vm, source) {
@@ -228,9 +235,10 @@ pub(crate) fn get_superclass(vm: &mut Vm, args: &[Value]) -> Result<Option<Value
     let Ok(class) = vm.class_of_mirror(mirror) else {
         return Ok(Some(Value::Ref(Ref::NULL))); // a primitive type
     };
-    let superclass = match class.file.access_flags.has(AccessFlags::INTERFACE) {
-        true => None,
-        false => class.superclass.clone(),
+    let superclass = if class.file.access_flags.has(AccessFlags::INTERFACE) {
+        None
+    } else {
+        class.superclass.clone()
     };
     let superclass = match superclass {
         Some(superclass) => vm.mirror(&superclass)?,
@@ -244,7 +252,9 @@ pub(crate) fn get_superclass(vm: &mut Vm, args: &[Value]) -> Result<Option<Value
 /// `Array.newArray(Class, int)`: a new array with elements of the mirror's
 /// type, which is how `Arrays.copyOf` makes an array of the same class.
 pub(crate) fn new_array(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
-    let [Value::Ref(mirror), Value::Int(count)] = *args else { unreachable!() };
+    let [Value::Ref(mirror), Value::Int(count)] = *args else {
+        unreachable!("checked descriptor")
+    };
     let mirror = crate::interpreter::non_null(mirror)?;
     let element = match vm.mirror_classes.get(&mirror) {
         Some(class) if class.file.this_class.starts_with('[') => {
@@ -252,16 +262,21 @@ pub(crate) fn new_array(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
         }
         Some(class) => FieldType::Object(class.file.this_class.clone()),
         None => {
-            let primitives =
-                "ZBCSIJFD".chars().map(|c| FieldType::parse(&c.to_string()));
-            let mut primitives = primitives.collect::<Result<Vec<_>>>()?.into_iter();
             let name = vm.primitive_mirrors.iter().find(|&(_, &m)| m == mirror);
-            let name = name.map(|(name, _)| name.clone()).expect("a mirror");
-            let Some(t) = primitives.find(|t| t.to_string() == name) else {
-                let class = "java/lang/IllegalArgumentException";
-                return Err(Error::Exception { class, message: None }); // void
-            };
-            t
+            match name.map(|(name, _)| name.as_str()) {
+                Some("boolean") => FieldType::Boolean,
+                Some("byte") => FieldType::Byte,
+                Some("char") => FieldType::Char,
+                Some("short") => FieldType::Short,
+                Some("int") => FieldType::Int,
+                Some("long") => FieldType::Long,
+                Some("float") => FieldType::Float,
+                Some("double") => FieldType::Double,
+                _ => {
+                    let class = "java/lang/IllegalArgumentException";
+                    return Err(Error::Exception { class, message: None }); // void
+                }
+            }
         }
     };
     let array = vm.heap.new_array(&element, crate::arrays::length(count)?)?;

@@ -38,9 +38,8 @@ pub(crate) fn take_one(
     attributes: &mut Vec<Attribute>,
     name: &str,
 ) -> Result<Option<Attribute>> {
-    let (mut found, rest): (Vec<_>, Vec<_>) =
-        std::mem::take(attributes).into_iter().partition(|a| a.name == name);
-    *attributes = rest;
+    let mut found: Vec<Attribute> =
+        attributes.extract_if(.., |a| a.name == name).collect();
     if found.len() > 1 {
         let m = format!("{} {name} attributes where one is allowed", found.len());
         return Err(Error::ClassFormat(m));

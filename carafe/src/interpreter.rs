@@ -11,6 +11,7 @@ use crate::flags::AccessFlags;
 use crate::frame::Frame;
 use crate::heap::{Heap, Ref};
 use crate::loader::{ClassPath, linkage};
+use crate::member::Field;
 use crate::mirror::is_class;
 use crate::numeric::numeric;
 use crate::opcode::*;
@@ -57,22 +58,33 @@ pub struct Vm {
     pub boot_dirs: usize,
     /// The `Class` objects of the primitive types, by name: `int`, `void`.
     pub(crate) primitive_mirrors: BTreeMap<String, Ref>,
-    /// The class each mirror stands for, by the mirror's reference.
+    /// The class each mirror represents, by the mirror's reference.
     pub(crate) mirror_classes: HashMap<Ref, Rc<Class>>,
+    /// How many times each object's monitor is held, for the objects whose
+    /// monitor is held at all.
+    pub(crate) monitors: HashMap<Ref, u32>,
+    /// The monitors that `synchronized` methods hold, with the index in
+    /// `frames` of each method's frame.
+    pub(crate) method_monitors: Vec<(usize, Ref)>,
     /// Extra frames allowed while the VM constructs an exception, so that a
     /// `StackOverflowError` can be created at the limit.
     pub(crate) headroom: usize,
     /// Each exception's stack trace, recorded by `fillInStackTrace`.
     pub(crate) backtraces: HashMap<Ref, Vec<TraceFrame>>,
+    /// The natives running, each with the number of frames below it.
+    pub(crate) native_frames: Vec<(usize, TraceFrame)>,
     /// How many lambda classes carafe has made, which numbers the next one.
     pub(crate) lambdas: usize,
-    /// The main thread's `Thread` object, once something has asked for it.
+    /// The main thread's `Thread` object, once a program has called
+    /// `Thread.currentThread()`.
     pub thread: Option<Ref>,
     /// Standard input that has arrived, and how much of it has been read.
     pub stdin: Vec<u8>,
     pub(crate) stdin_read: usize,
     /// Where more standard input comes from when that runs out, if anywhere.
     pub stdin_source: Option<Box<dyn std::io::Read>>,
+    /// Where output goes before the VM blocks on `stdin_source`, if anywhere.
+    pub stdout_sink: Option<Box<dyn std::io::Write>>,
     // @show
 }
 
@@ -245,8 +257,9 @@ impl Vm {
                 return Err(self.thrown(exception)?);
             }
             (MONITORENTER | MONITOREXIT, _) => {
-                // One thread: every monitor is free to enter (JVM4 adds threads).
-                non_null(frame.pop_ref()?)?;
+                // One thread: no monitor is contended, so only the count changes.
+                let object = non_null(frame.pop_ref()?)?;
+                self.monitor(i.opcode, object)?;
             }
             (CHECKCAST | INSTANCEOF, &Operand::Constant(index)) => {
                 self.type_check(i.opcode, index)?
@@ -265,6 +278,11 @@ impl Vm {
             }
             (INVOKESTATIC, &Operand::Constant(index)) => {
                 return self.invoke_static(index);
+            }
+            (IRETURN..=RETURN, _) if frame.is_synchronized() => {
+                let flow = branch(frame, i)?;
+                self.exit_method_monitor(self.frames.len() - 1)?;
+                return Ok(flow);
             }
             // @show
             _ => return branch(frame, i),
@@ -331,7 +349,8 @@ fn holds(c: u8, a: i32, b: i32) -> bool {
         2 => a < b,
         3 => a >= b,
         4 => a > b,
-        _ => a <= b,
+        5 => a <= b,
+        _ => unreachable!("condition {c}"),
     }
 }
 // @end
@@ -352,7 +371,8 @@ fn int_op(opcode: u8, a: i32, b: i32) -> Result<i32> {
         IUSHR => (a as u32).wrapping_shr(b as u32) as i32,
         IAND => a & b,
         IOR => a | b,
-        _ => a ^ b,
+        IXOR => a ^ b,
+        _ => unreachable!("int_op({opcode})"),
     })
 }
 
@@ -376,7 +396,8 @@ fn shuffle(frame: &mut Frame, opcode: u8) -> Result<()> {
         DUP2 => (2, &[1, 0, 1, 0]),
         DUP2_X1 => (3, &[1, 0, 2, 1, 0]),
         DUP2_X2 => (4, &[1, 0, 3, 2, 1, 0]),
-        _ => (2, &[0, 1]), // SWAP
+        SWAP => (2, &[0, 1]),
+        _ => unreachable!("shuffle({opcode})"),
     };
     let mut slots = Vec::with_capacity(take);
     for _ in 0..take {
@@ -450,10 +471,117 @@ impl Vm {
         self.frames.push(frame);
         self.calls += 1;
         self.deepest = self.deepest.max(self.frames.len());
+        // @hide
+        if let Err(error) = self.enter_method_monitor() {
+            self.frames.pop();
+            return Err(error);
+        }
+        // @show
         Ok(())
     }
     // @end
 }
+
+impl Vm {
+    // @listing monitors
+    /// `monitorenter` and `monitorexit` of `object`'s monitor, which with one
+    /// thread is always free: the count of holds goes up, or down if the
+    /// monitor is held (JVMS 6.5).
+    pub(crate) fn monitor(&mut self, opcode: u8, object: Ref) -> Result<()> {
+        let held = self.monitors.get(&object).copied().unwrap_or(0);
+        let count = match opcode {
+            MONITORENTER => held.checked_add(1).ok_or_else(|| {
+                Error::Unsupported("a monitor entered 2^32 times".to_string())
+            })?,
+            _ if held == 0 => return Err(not_owner(None)),
+            _ => held - 1,
+        };
+        if count == 0 {
+            self.monitors.remove(&object);
+        } else {
+            self.monitors.insert(object, count);
+        }
+        Ok(())
+    }
+
+    /// For a `synchronized` method, whose frame was just pushed: enters the
+    /// monitor of its receiver, or of its class's mirror if it is static
+    /// (JVMS 2.11.10), and records it, since the method may store over
+    /// local 0.
+    fn enter_method_monitor(&mut self) -> Result<()> {
+        let frame = self.frames.last().expect("a frame was pushed");
+        if !frame.is_synchronized() {
+            return Ok(());
+        }
+        let class = frame.class.clone();
+        let flags = class.file.methods[frame.method].access_flags;
+        let object = match frame.locals.first() {
+            _ if flags.has(AccessFlags::STATIC) => self.mirror(&class)?,
+            Some(&Value::Ref(this)) => this,
+            _ => {
+                let m = format!("{} without an object", frame.name());
+                return Err(Error::Verify(m));
+            }
+        };
+        self.monitor(MONITORENTER, object)?;
+        self.method_monitors.push((self.frames.len() - 1, object));
+        Ok(())
+    }
+
+    /// Exits the monitor that the `synchronized` method of frame `at`
+    /// entered, if it entered one, as its frame is about to be popped.
+    pub(crate) fn exit_method_monitor(&mut self, at: usize) -> Result<()> {
+        match self.method_monitors.last() {
+            Some(&(frame, object)) if frame == at => {
+                self.method_monitors.pop();
+                self.monitor(MONITOREXIT, object)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Frame {
+    /// Whether this frame's method is `synchronized`, so that it holds a
+    /// monitor while it runs.
+    pub(crate) fn is_synchronized(&self) -> bool {
+        let flags = self.class.file.methods[self.method].access_flags;
+        flags.has(AccessFlags::SYNCHRONIZED)
+    }
+}
+
+/// `IllegalMonitorStateException`, for a thread that doesn't hold a monitor.
+fn not_owner(message: Option<&str>) -> Error {
+    let class = "java/lang/IllegalMonitorStateException";
+    Error::Exception { class, message: message.map(str::to_string) }
+}
+
+/// `Object.notify()` and `Object.notifyAll()`: no other thread can be
+/// waiting, so there is nothing to wake, but the caller must hold the
+/// monitor.
+pub(crate) fn notify(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [Value::Ref(object)] = *args else { unreachable!("checked descriptor") };
+    if !vm.monitors.contains_key(&object) {
+        return Err(not_owner(Some("current thread is not owner")));
+    }
+    Ok(None)
+}
+
+/// `Object.wait0(long)`: with no other thread to call `notify`, a wait with
+/// a timeout returns at once, as a spurious wakeup may, and a wait without
+/// one would never end.
+pub(crate) fn wait(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
+    let [this, Value::Long(timeout)] = *args else {
+        unreachable!("checked descriptor")
+    };
+    notify(vm, &[this])?;
+    if timeout == 0 {
+        let m = "Object.wait() with no other thread to notify it";
+        return Err(Error::Unsupported(m.to_string()));
+    }
+    Ok(None)
+}
+// @end
 
 // @listing narrow-return
 /// The value `ireturn` returns, narrowed to the method's return type: a
@@ -488,6 +616,9 @@ impl Vm {
                     .push(Value::Ref(object));
             }
             Some(Resolved::Field(slot)) => return self.field_access(opcode, slot),
+            Some(Resolved::FinalField(slot)) if opcode == GETFIELD => {
+                return self.field_access(opcode, slot);
+            }
             _ => {}
         }
         // @show
@@ -518,9 +649,16 @@ impl Vm {
             );
             return Err(linkage("java/lang/IncompatibleClassChangeError", m));
         }
+        if opcode == PUTFIELD {
+            self.check_final_store(&owner, &field)?;
+        }
         let slot = owner.field(&field.name, &field.descriptor)?;
         // @hide
-        from.cache(index, Resolved::Field(slot.clone()));
+        if field.access_flags.has(AccessFlags::FINAL) {
+            from.cache(index, Resolved::FinalField(slot.clone()));
+        } else {
+            from.cache(index, Resolved::Field(slot.clone()));
+        }
         // @show
         let frame = self.frames.last_mut().expect("a frame");
         if opcode == GETFIELD {
@@ -531,6 +669,43 @@ impl Vm {
             let object = non_null(frame.pop_ref()?)?;
             self.heap.write(object.0 + slot.offset, &slot.ty, value)
         }
+    }
+
+    /// A store to a `final` field must run in an initializer of the class
+    /// that declares it: `<init>` for `putfield`, `<clinit>` for `putstatic`
+    /// (JVMS 6.5).
+    pub(crate) fn check_final_store(
+        &self,
+        owner: &Class,
+        field: &Field,
+    ) -> Result<()> {
+        let flags = field.access_flags;
+        if !flags.has(AccessFlags::FINAL) {
+            return Ok(());
+        }
+        let frame = self.frames.last().expect("a frame");
+        let (kind, init) = if flags.has(AccessFlags::STATIC) {
+            ("static", "<clinit>")
+        } else {
+            ("non-static", "<init>")
+        };
+        let (class, owner) = (&frame.class.file.this_class, &owner.file.this_class);
+        let update = format!(
+            "Update to {kind} final field {}.{} attempted from a different",
+            dotted(owner),
+            field.name
+        );
+        let m = if class != owner {
+            let class = dotted(class);
+            format!("{update} class ({class}) than the field's declaring class")
+        } else if frame.name() != init {
+            let method = frame.name();
+            // HotSpot's message ends with a space.
+            format!("{update} method ({method}) than the initializer method {init} ")
+        } else {
+            return Ok(());
+        };
+        Err(linkage("java/lang/IllegalAccessError", m))
     }
     // @end
 
@@ -550,6 +725,12 @@ impl Vm {
             return Ok(Flow::Next);
         }
         let (class, method) = self.resolve_method(&from, index)?;
+        let resolved = &class.file.methods[method];
+        if resolved.access_flags.has(AccessFlags::STATIC) {
+            let name = external(&class.file.this_class, &resolved.name, &resolved.ty);
+            let m = format!("Expecting non-static method '{name}'");
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
+        }
         // `super.m()`: start the search at the current class's superclass.
         let (class, method) = match &from.superclass {
             Some(superclass)
@@ -700,7 +881,11 @@ fn overrides(c: &Rc<Class>, mc: usize, a: &Rc<Class>, ma: usize) -> bool {
 
 /// HotSpot's `AbstractMethodError` for a receiver that has no
 /// implementation of method `mr` of `resolved`.
-fn abstract_method(receiver: &Class, resolved: &Class, mr: usize) -> Error {
+pub(crate) fn abstract_method(
+    receiver: &Class,
+    resolved: &Class,
+    mr: usize,
+) -> Error {
     let m = &resolved.file.methods[mr];
     let flags = resolved.file.access_flags;
     let kind = if flags.has(AccessFlags::INTERFACE) {
@@ -728,10 +913,16 @@ impl Vm {
     // @listing invoke-interface
     /// `invokeinterface`: resolves an interface method, checks that the
     /// object implements the interface, and selects as `invokevirtual` does.
+    /// The method selected must be public or private (JVMS 6.5).
     fn invoke_interface(&mut self, index: u16) -> Result<Flow> {
         let from = self.frames.last().expect("a caller").class.clone();
         let (class, method) = self.resolve_method(&from, index)?;
         let resolved = &class.file.methods[method];
+        if resolved.access_flags.has(AccessFlags::STATIC) {
+            let name = external(&class.file.this_class, &resolved.name, &resolved.ty);
+            let m = format!("Expected instance not static method '{name}'");
+            return Err(linkage("java/lang/IncompatibleClassChangeError", m));
+        }
         let caller = self.frames.last_mut().expect("a caller");
         let args = caller.pop_args(resolved.arg_slots())?;
         let Some(&Value::Ref(this)) = args.first() else {
@@ -759,6 +950,11 @@ impl Vm {
             }
             _ => return Err(abstract_method(&receiver, &class, method)),
         };
+        let selected = &class.file.methods[method];
+        if !selected.access_flags.has(AccessFlags::PUBLIC | AccessFlags::PRIVATE) {
+            let name = external(&class.file.this_class, &selected.name, &selected.ty);
+            return Err(linkage("java/lang/IllegalAccessError", format!("'{name}'")));
+        }
         self.call(Frame::new(class, method, &args)?)?;
         Ok(Flow::Next)
     }

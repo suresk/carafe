@@ -1,8 +1,8 @@
+// @listing system-shim
 package java.lang;
 
 import java.io.PrintStream;
 
-// @listing system-shim
 /**
  * carafe's System, which replaces the JDK's: standard output and standard
  * error, as streams on file descriptors 1 and 2, with none of the JDK's

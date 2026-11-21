@@ -45,6 +45,14 @@ public class Sorting {
         System.arraycopy(a, 0, a, 5, 10);
     }
 
+    static void copyBackwards(int[] a) {
+        System.arraycopy(a, -1, a, 0, -1);
+    }
+
+    static void copyNames() {
+        System.arraycopy(new String[5], 0, new String[5], 0, 9);
+    }
+
     static void copyMismatch() {
         System.arraycopy(new int[1], 0, new long[1], 0, 1);
     }
@@ -66,6 +74,8 @@ public class Sorting {
         System.out.println(Arrays.toString(letters("héllo")));
         Runnable[] failures = {
             () -> copyTooFar(numbers()),
+            () -> copyBackwards(numbers()),
+            () -> copyNames(),
             () -> copyMismatch(),
             () -> pastTheEnd(numbers()),
             () -> negative(-1),

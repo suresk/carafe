@@ -2,10 +2,10 @@
 
 use crate::arrays;
 use crate::error::Result;
-use crate::exceptions;
+use crate::exceptions::{self, TraceFrame};
 use crate::frame::Frame;
 use crate::heap::Ref;
-use crate::interpreter::Vm;
+use crate::interpreter::{self, Vm};
 use crate::lang;
 use crate::loader::linkage;
 use crate::mirror;
@@ -52,6 +52,9 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         "java/lang/String.intern()Ljava/lang/String;" => Vm::intern_native,
         "java/lang/Runtime.availableProcessors()I" => |_, _| Ok(Some(Value::Int(1))),
         "java/lang/Object.getClass()Ljava/lang/Class;" => mirror::get_class,
+        "java/lang/Object.notify()V" => interpreter::notify,
+        "java/lang/Object.notifyAll()V" => interpreter::notify,
+        "java/lang/Object.wait0(J)V" => interpreter::wait,
         "java/lang/Class.initClassName()Ljava/lang/String;" => {
             mirror::init_class_name
         }
@@ -73,6 +76,10 @@ fn find(class: &str, name: &str, descriptor: &str) -> Option<Native> {
         }
         "java/lang/Throwable.fillInStackTrace(I)Ljava/lang/Throwable;" => {
             exceptions::fill_in_stack_trace
+        }
+        "java/lang/StackTraceElement.initStackTraceElements\
+         ([Ljava/lang/StackTraceElement;Ljava/lang/Object;I)V" => {
+            exceptions::init_stack_trace_elements
         }
         "java/lang/ClassLoader.registerNatives()V" => lang::nothing,
         "java/lang/Thread.registerNatives()V" => lang::nothing,
@@ -146,7 +153,17 @@ impl Vm {
             return Err(linkage("java/lang/UnsatisfiedLinkError", m));
         };
         self.natives.insert(format!("{class}.{}{}", method.name, method.descriptor));
-        if let Some(result) = native(self, &frame.args())? {
+        // @hide
+        let running =
+            TraceFrame { class: frame.class.clone(), method: frame.method, pc: None };
+        self.native_frames.push((self.frames.len(), running));
+        // @show
+        let result = native(self, &frame.args());
+        // @hide
+        let result = result.map_err(|error| self.native_error(error));
+        self.native_frames.pop();
+        // @show
+        if let Some(result) = result? {
             self.frames.last_mut().expect("a caller").push(result)?;
         }
         Ok(())

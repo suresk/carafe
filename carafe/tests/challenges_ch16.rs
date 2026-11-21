@@ -62,3 +62,16 @@ fn suppressed_in_the_report() {
     assert_eq!(ours, theirs);
     assert!(ours.contains("\n\tSuppressed: java.lang.IllegalStateException: a\n"));
 }
+
+#[test]
+fn a_cycle_in_the_report() {
+    let mut vm = boot("RvCycle");
+    let Err(Error::Thrown { exception, .. }) = vm.run_main("RvCycle") else {
+        panic!()
+    };
+    let ours = full_report(&mut vm, exception).unwrap();
+    let app = compile("RvCycle", "RvCycle").parent().unwrap().to_path_buf();
+    let (_, theirs) = Jdk::find().unwrap().java_both(&[], &app, "RvCycle").unwrap();
+    assert_eq!(ours, theirs);
+    assert!(ours.ends_with("[CIRCULAR REFERENCE: java.lang.RuntimeException: y]\n"));
+}

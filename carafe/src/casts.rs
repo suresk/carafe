@@ -39,22 +39,27 @@ impl Vm {
 
     // @listing type-check
     /// `checkcast` and `instanceof`. `null` passes `checkcast` and is an
-    /// instance of nothing.
+    /// instance of nothing, and the class isn't resolved for it (JVMS 6.5).
     pub(crate) fn type_check(&mut self, opcode: u8, index: u16) -> Result<()> {
         let from = self.frames.last().expect("a frame").class.clone();
+        let frame = self.frames.last_mut().expect("a frame");
+        let object = frame.pop_ref()?;
+        if object == Ref::NULL {
+            let null =
+                if opcode == INSTANCEOF { Value::Int(0) } else { Value::Ref(object) };
+            return frame.push(null);
+        }
+        // Resolving and loading classes doesn't allocate on the heap, so
+        // `object` stays valid.
         let target =
             self.resolve_class(&from, from.file.constant_pool.class_name(index)?)?;
-        let object = self.frames.last_mut().expect("a frame").pop_ref()?;
-        let fits = object == Ref::NULL || {
-            let class = self.class_of(object)?;
-            self.is_assignable(&class, &target)?
-        };
+        let class = self.class_of(object)?;
+        let fits = self.is_assignable(&class, &target)?;
         let frame = self.frames.last_mut().expect("a frame");
         if opcode == INSTANCEOF {
-            return frame.push(Value::Int((fits && object != Ref::NULL) as i32));
+            return frame.push(Value::Int(fits as i32));
         }
         if !fits {
-            let class = self.class_of(object)?;
             let m = format!(
                 "class {} cannot be cast to class {} ({})",
                 java_name(&class),
@@ -64,7 +69,7 @@ impl Vm {
             let class = "java/lang/ClassCastException";
             return Err(Error::Exception { class, message: Some(m) });
         }
-        self.frames.last_mut().expect("a frame").push(Value::Ref(object))
+        frame.push(Value::Ref(object))
     }
     // @end
 }
@@ -100,19 +105,18 @@ pub(crate) fn java_name(class: &Class) -> String {
 /// in the unnamed module of the application class loader, and `java.base`'s
 /// in module `java.base` of the bootstrap loader.
 pub(crate) fn modules(s: &Class, t: &Class) -> String {
-    let place = |c: &Class| match c.boot {
-        true => "module java.base of loader 'bootstrap'",
-        false => "unnamed module of loader 'app'",
+    let place = |c: &Class| {
+        if c.boot {
+            "module java.base of loader 'bootstrap'"
+        } else {
+            "unnamed module of loader 'app'"
+        }
     };
-    match place(s) == place(t) {
-        true => format!("{} and {} are in {}", java_name(s), java_name(t), place(s)),
-        false => format!(
-            "{} is in {}; {} is in {}",
-            java_name(s),
-            place(s),
-            java_name(t),
-            place(t)
-        ),
+    if place(s) == place(t) {
+        format!("{} and {} are in {}", java_name(s), java_name(t), place(s))
+    } else {
+        let (s_name, t_name) = (java_name(s), java_name(t));
+        format!("{s_name} is in {}; {t_name} is in {}", place(s), place(t))
     }
 }
 // @end
@@ -165,7 +169,11 @@ impl Vm {
     fn element_class(&mut self, array: Ref) -> Result<Rc<Class>> {
         let class = self.class_of(array)?;
         let component = &class.file.this_class[1..];
-        let name = reference(component).expect("an array of references");
+        let Some(name) = reference(component) else {
+            let m =
+                format!("{} is not an array of references", class.file.this_class);
+            return Err(Error::Verify(m));
+        };
         self.load(name)
     }
     // @end

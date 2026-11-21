@@ -43,10 +43,11 @@ pub(crate) fn numeric(frame: &mut Frame, op: u8) -> Result<()> {
             let b = frame.pop_float()?;
             Value::Int(compare(frame.pop_float()?.partial_cmp(&b), op == FCMPG))
         }
-        _ => {
-            let b = frame.pop_double()?; // DCMPL, DCMPG
+        DCMPL | DCMPG => {
+            let b = frame.pop_double()?;
             Value::Int(compare(frame.pop_double()?.partial_cmp(&b), op == DCMPG))
         }
+        _ => unreachable!("numeric({op})"),
     };
     frame.push(value)
 }
@@ -100,8 +101,8 @@ impl Float for f32 {}
 impl Float for f64 {}
 
 /// `float` and `double` arithmetic, which is IEEE 754's: no exceptions, and
-/// `%` truncates the quotient, as C's `fmod` does. The opcodes for `double`
-/// are one more than those for `float`, so `op` may be either.
+/// `%` truncates the quotient, as C's `fmod` does. `op` may be either the
+/// `float` or the `double` opcode.
 fn float_op<T: Float>(op: u8, a: T, b: T) -> T {
     match op {
         FADD | DADD => a + b,

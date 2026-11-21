@@ -84,8 +84,10 @@ fn run(dir: &str, class: &str) -> ExitCode {
         }
     };
     // @hide
-    // The program reads standard input as it asks for it.
+    // Standard input is read only when the program reads, and what the
+    // program printed before each read reaches the terminal first.
     vm.stdin_source = Some(Box::new(std::io::stdin()));
+    vm.stdout_sink = Some(Box::new(std::io::stdout()));
     // @show
     let result = vm.run_main(class);
     std::io::stdout().write_all(&vm.stdout).expect("stdout");

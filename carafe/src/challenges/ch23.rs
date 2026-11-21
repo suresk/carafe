@@ -26,8 +26,8 @@ pub fn cache_census(class: &Class) -> BTreeMap<&'static str, usize> {
         let kind = match class.cached(index) {
             Some(Resolved::Class(_)) => "class",
             Some(Resolved::Method(..)) => "method",
-            Some(Resolved::Field(_)) => "field",
-            Some(Resolved::Static(..)) => "static",
+            Some(Resolved::Field(_) | Resolved::FinalField(_)) => "field",
+            Some(Resolved::Static(..) | Resolved::FinalStatic(..)) => "static",
             None => continue,
         };
         *counts.entry(kind).or_insert(0) += 1;

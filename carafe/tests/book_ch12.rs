@@ -119,8 +119,10 @@ fn the_same_errors_as_hotspot() {
     let (mut vm, hotspot) = sorting();
     let mut errors = Vec::new();
     let numbers = call(&mut vm, "numbers", "()[I", &[]).unwrap();
-    let failures: [(&str, &str, Vec<Value>); 4] = [
+    let failures: [(&str, &str, Vec<Value>); 6] = [
         ("copyTooFar", "([I)V", vec![numbers]),
+        ("copyBackwards", "([I)V", vec![numbers]),
+        ("copyNames", "()V", vec![]),
         ("copyMismatch", "()V", vec![]),
         ("pastTheEnd", "([I)I", vec![numbers]),
         ("negative", "(I)[I", vec![Value::Int(-1)]),

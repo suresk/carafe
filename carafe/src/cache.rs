@@ -19,6 +19,11 @@ pub enum Resolved {
     /// A static field of an initialized class: the class, the field's index
     /// in its statics, and its type.
     Static(Rc<Class>, usize, FieldType),
+    /// A `final` instance field, which only `getfield` takes from the cache,
+    /// so that every `putfield` of it is checked.
+    FinalField(Slot),
+    /// A `final` static field, which only `getstatic` takes from the cache.
+    FinalStatic(Rc<Class>, usize, FieldType),
 }
 
 impl Class {

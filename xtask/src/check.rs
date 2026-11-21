@@ -366,22 +366,34 @@ fn write_package(
     write_if_changed(&scratch.join("Cargo.toml"), &manifest)?;
     write_if_changed(&scratch.join("src/lib.rs"), "")?;
     // The Java programs that tests compile, from `CARGO_MANIFEST_DIR/java`,
-    // and the measurement corpus, from `CARGO_MANIFEST_DIR/corpus`.
+    // and the corpus of Chapter 24, from `CARGO_MANIFEST_DIR/corpus`.
     for sources in ["java", "corpus"] {
-        fs::create_dir_all(scratch.join(sources))?;
-        for entry in
-            fs::read_dir(Path::new(ROOT).join("carafe").join(sources))?.flatten()
-        {
-            let copy = scratch.join(sources).join(entry.file_name());
-            let contents = fs::read(entry.path())?;
-            if fs::read(&copy).ok().as_ref() != Some(&contents) {
-                fs::write(&copy, contents)?;
-            }
-        }
+        copy_tree(
+            &Path::new(ROOT).join("carafe").join(sources),
+            &scratch.join(sources),
+        )?;
     }
     for target in targets {
         let path = scratch.join("tests").join(format!("{}.rs", target.name));
         write_if_changed(&path, &target.source)?;
+    }
+    Ok(())
+}
+
+/// Copies the files under `from` to `to`, subdirectories (Java packages)
+/// included, writing only those that changed.
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)?.flatten() {
+        let copy = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &copy)?;
+            continue;
+        }
+        let contents = fs::read(entry.path())?;
+        if fs::read(&copy).ok().as_ref() != Some(&contents) {
+            fs::write(&copy, contents)?;
+        }
     }
     Ok(())
 }

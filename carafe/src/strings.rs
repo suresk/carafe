@@ -23,9 +23,10 @@ impl Vm {
     pub fn new_string(&mut self, units: &[u16]) -> Result<Ref> {
         let class = self.load("java/lang/String")?;
         let latin1 = units.iter().all(|&u| u <= 0xff);
-        let bytes: Vec<u8> = match latin1 {
-            true => units.iter().map(|&u| u as u8).collect(),
-            false => units.iter().flat_map(|u| u.to_le_bytes()).collect(),
+        let bytes: Vec<u8> = if latin1 {
+            units.iter().map(|&u| u as u8).collect()
+        } else {
+            units.iter().flat_map(|u| u.to_le_bytes()).collect()
         };
         let string = self.heap.new_object(&class);
         self.heap.roots.push(string); // held across the next allocation

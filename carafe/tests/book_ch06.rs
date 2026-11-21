@@ -97,10 +97,10 @@ fn value(text: &str) -> Value {
 fn same(a: Value, b: Value) -> bool {
     match (a, b) {
         (Value::Float(x), Value::Float(y)) => {
-            x.to_bits() == y.to_bits() || x.is_nan() && y.is_nan()
+            x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
         }
         (Value::Double(x), Value::Double(y)) => {
-            x.to_bits() == y.to_bits() || x.is_nan() && y.is_nan()
+            x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
         }
         _ => a == b,
     }

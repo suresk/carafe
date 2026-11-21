@@ -28,12 +28,12 @@ public class Casts {
     static void list() {
         List<String> names = new ArrayList<>(10);
         names.add("carafe");
-        names.add("ember");
-        names.add("felite");
+        names.add("mug");
+        names.add("bottle");
         for (String name : names) {
             System.out.println(name);
         }
-        System.out.println(names.contains("ember") ? "contains ember" : "no ember");
+        System.out.println(names.contains("mug") ? "contains mug" : "no mug");
     }
 
     static void badCast() {

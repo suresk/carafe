@@ -28,7 +28,8 @@ fn class_dir(test: &str) -> PathBuf {
     dir
 }
 
-/// Loads `Loading` from `dir` and runs its `main`, as `java Loading` does.
+/// Loads `Loading` through `vm`'s class path and runs its `main`, as `java
+/// Loading` does.
 fn run(vm: &mut Vm) -> carafe::Result<Option<Value>> {
     let loading = vm.load("Loading")?;
     vm.invoke(&loading, "main", "([Ljava/lang/String;)V", &[Value::Ref(Ref::NULL)])
@@ -89,8 +90,11 @@ fn subclass_layout() {
 fn patch(dir: &Path, class: &str, from: &[u8], to: &[u8]) {
     let path = dir.join(format!("{class}.class"));
     let mut bytes = std::fs::read(&path).unwrap();
-    while let Some(at) = bytes.windows(from.len()).position(|w| w == from) {
+    let mut at = 0;
+    while let Some(found) = bytes[at..].windows(from.len()).position(|w| w == from) {
+        at += found;
         bytes[at..at + from.len()].copy_from_slice(to);
+        at += from.len();
     }
     std::fs::write(path, bytes).unwrap();
 }

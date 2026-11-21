@@ -31,7 +31,7 @@ pub struct Class {
     pub state: Cell<State>,
     /// The values of the static fields, in the order the class declares them.
     pub statics: RefCell<Vec<Value>>,
-    /// The class's `java.lang.Class` object, once something has asked for it.
+    /// The class's `java.lang.Class` object, once it has been created.
     pub mirror: Cell<Ref>,
     /// Whether the class came from the boot class path: `java.base` and the
     /// shims, as opposed to the program's own classes.
@@ -178,7 +178,7 @@ impl Class {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Uninitialized,
-    /// The initializer is running; requests to initialize return at once.
+    /// The initializer is running; requests to initialize return immediately.
     InProgress,
     Initialized,
     /// The initializer threw; the class can never be used.

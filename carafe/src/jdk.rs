@@ -12,6 +12,7 @@ use std::{env, fs};
 pub const JDK_VERSION: &str = "25.0.5+8-LTS";
 
 /// A JDK home directory, checked to be the pinned release.
+#[derive(Clone, Debug)]
 pub struct Jdk {
     home: PathBuf,
 }
@@ -49,12 +50,15 @@ impl Jdk {
 
     // @listing jdk-javac
     /// Compiles `source` with `javac` into the directory `out`, once per process.
+    /// The classes it uses are looked for in the source's directory too.
     pub fn javac(&self, source: &Path, out: &Path) -> Result<()> {
         static DONE: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
         let mut done = DONE.lock().unwrap_or_else(PoisonError::into_inner);
         let job = (source.to_path_buf(), out.to_path_buf());
         if !done.contains(&job) {
+            let dir = source.parent().unwrap_or(Path::new("."));
             let mut javac = Command::new(self.home.join("bin").join("javac"));
+            javac.arg("-sourcepath").arg(dir);
             self.run(javac.arg("-d").arg(out).arg(source))?;
             done.push(job);
         }
@@ -115,51 +119,68 @@ impl Jdk {
 }
 
 // @listing jdk-java-base
+/// Held while a thread extracts `java.base` or compiles the shims, so that
+/// two tests in one process never work in the same scratch directory.
+static WORKING: Mutex<()> = Mutex::new(());
+
 impl Jdk {
     /// The class files of the JDK's `java.base` module, extracted once into
     /// `work/java.base` with `jimage`.
     pub fn java_base(&self, work: &Path) -> Result<PathBuf> {
         let dir = work.join("java.base");
-        if !dir.join("java/lang/Object.class").is_file() {
-            // Extract beside it, then rename, so that concurrent tests never
-            // see a half-extracted directory.
-            let scratch = work.join(format!("jimage-{}", std::process::id()));
-            let mut jimage = Command::new(self.home.join("bin").join("jimage"));
-            jimage.args(["extract", "--include", "regex:/java.base/.*", "--dir"]);
-            self.run(
-                jimage.arg(&scratch).arg(self.home.join("lib").join("modules")),
-            )?;
-            if fs::rename(scratch.join("java.base"), &dir).is_err() && !dir.is_dir() {
-                return Err(Error::Jdk(format!(
-                    "could not create {}",
-                    dir.display()
-                )));
-            }
-            let _ = fs::remove_dir_all(&scratch);
+        let done = || dir.join("java/lang/Object.class").is_file();
+        if done() {
+            return Ok(dir);
         }
+        let _working = WORKING.lock().unwrap_or_else(PoisonError::into_inner);
+        if done() {
+            return Ok(dir); // another thread extracted it while this one waited
+        }
+        // Extract beside it, then rename, so that a test in another process
+        // never sees a half-extracted directory.
+        let scratch = work.join(format!("jimage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch); // left by a run that failed
+        let mut jimage = Command::new(self.home.join("bin").join("jimage"));
+        jimage.args(["extract", "--include", "regex:/java.base/.*", "--dir"]);
+        self.run(jimage.arg(&scratch).arg(self.home.join("lib").join("modules")))?;
+        if fs::rename(scratch.join("java.base"), &dir).is_err() && !done() {
+            return Err(Error::Jdk(format!("could not create {}", dir.display())));
+        }
+        let _ = fs::remove_dir_all(&scratch);
         Ok(dir)
     }
 
     /// The shims in `sources` (`java/lang/System.java` and the rest),
     /// compiled into `java.base`'s packages in a directory under `work`
-    /// named after their contents.
+    /// named after their names and contents.
     pub fn shims(&self, sources: &Path, work: &Path) -> Result<PathBuf> {
         let files = java_files(sources)?;
+        // `DefaultHasher` may change between Rust releases, which only means
+        // compiling the shims again.
         let mut hasher = std::hash::DefaultHasher::new();
         for file in &files {
+            std::hash::Hash::hash(
+                file.strip_prefix(sources).unwrap_or(file),
+                &mut hasher,
+            );
             std::hash::Hash::hash(&fs::read(file)?, &mut hasher);
         }
         let dir =
             work.join(format!("shims-{:016x}", std::hash::Hasher::finish(&hasher)));
+        if dir.is_dir() {
+            return Ok(dir);
+        }
+        let _working = WORKING.lock().unwrap_or_else(PoisonError::into_inner);
         if !dir.is_dir() {
             let scratch = work.join(format!("shims-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&scratch);
             let mut javac = Command::new(self.home.join("bin").join("javac"));
             javac
                 .arg("--patch-module")
                 .arg(format!("java.base={}", sources.display()));
             self.run(javac.arg("-d").arg(&scratch).args(&files))?;
             if fs::rename(&scratch, &dir).is_err() {
-                let _ = fs::remove_dir_all(&scratch); // another test got there first
+                let _ = fs::remove_dir_all(&scratch); // another process was first
             }
         }
         Ok(dir)
@@ -203,7 +224,10 @@ impl Jdk {
 
 impl Jdk {
     // @listing jdk-java-input
-    /// As `java_with`, with `input` as the program's standard input.
+    /// As `java_with`, with `input` as the program's standard input. All of
+    /// the input is written before any output is read, so input larger than
+    /// a pipe's buffer, given to a program that writes a lot before it reads,
+    /// could deadlock; the tests' inputs are a few lines.
     pub fn java_input(
         &self,
         options: &[&str],

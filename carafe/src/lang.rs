@@ -45,9 +45,9 @@ pub(crate) fn bits_to_double(_: &mut Vm, args: &[Value]) -> Result<Option<Value>
 
 // @listing max-memory
 /// `Runtime.maxMemory()`: the most heap carafe can address with 32-bit
-/// references, 4 GB.
+/// references, 4 GiB.
 pub(crate) fn max_memory(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
-    Ok(Some(Value::Long(1 << 32)))
+    Ok(Some(Value::Long(1_i64 << 32)))
 }
 // @end
 
@@ -59,7 +59,7 @@ pub(crate) fn nothing(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
 }
 
 /// A native that returns `false` or 0, the answer that turns a feature off:
-/// `CDS.getCDSConfigStatus`, which says that no class data archive is in use.
+/// `CDS.getCDSConfigStatus`, which reports that no class data archive is in use.
 pub(crate) fn zero(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
     Ok(Some(Value::Int(0)))
 }
@@ -69,11 +69,12 @@ pub(crate) fn zero(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
 /// `System.nanoTime()`: carafe's clock counts instructions executed, so a
 /// program that seeds something with the time does the same on every run.
 pub(crate) fn nano_time(vm: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
-    Ok(Some(Value::Long(vm.executed as i64)))
+    Ok(Some(Value::Long(i64::try_from(vm.executed).unwrap_or(i64::MAX))))
 }
 
-/// `System.currentTimeMillis()`: the time of day, which can't be the same
-/// on every run, in milliseconds since 1970.
+/// `System.currentTimeMillis()`: the time of day, which carafe doesn't fix,
+/// so that programs that time themselves see time pass, in milliseconds
+/// since 1970.
 pub(crate) fn current_time_millis(_: &mut Vm, _: &[Value]) -> Result<Option<Value>> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     Ok(Some(Value::Long(now.map_or(0, |d| d.as_millis() as i64))))
@@ -81,10 +82,12 @@ pub(crate) fn current_time_millis(_: &mut Vm, _: &[Value]) -> Result<Option<Valu
 // @end
 
 // @listing references
-/// `Reference.get0()`, `refersTo0(Object)` and `clear0()`: soft, weak and
-/// phantom references, which a collector clears when nothing else refers to
-/// their object. carafe has no collector until JVM2, so a reference keeps
-/// its object until the program clears it.
+// `Reference.get0()`, `refersTo0(Object)` and `clear0()`. A collector clears
+// a weak reference when nothing else refers to its object, and a soft one
+// only under memory pressure; carafe has no collector, so a reference keeps
+// its referent until `clear0` runs.
+
+/// The `referent` field of `java.lang.ref.Reference`.
 fn referent(vm: &mut Vm) -> Result<Slot> {
     let class = vm.load("java/lang/ref/Reference")?;
     Ok(class.field("referent", "Ljava/lang/Object;")?.clone())
@@ -97,7 +100,9 @@ pub(crate) fn reference_get(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>
 }
 
 pub(crate) fn refers_to(vm: &mut Vm, args: &[Value]) -> Result<Option<Value>> {
-    let [Value::Ref(this), Value::Ref(object)] = *args else { unreachable!() };
+    let [Value::Ref(this), Value::Ref(object)] = *args else {
+        unreachable!("checked descriptor")
+    };
     let slot = referent(vm)?;
     let same = vm.heap.read(this.0 + slot.offset, &slot.ty) == Value::Ref(object);
     Ok(Some(Value::Int(same.into())))
