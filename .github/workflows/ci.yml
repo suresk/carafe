@@ -11,10 +11,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The tests compile Java with the pinned JDK; setup-java sets JAVA_HOME to it.
+      # The exact Temurin build the book's numbers come from. setup-java's version matching
+      # can't resolve a build number on every runner, so download it from Adoptium.
+      - name: Download Temurin 25.0.5+8
+        shell: bash
+        run: |
+          os=$(case "$RUNNER_OS" in Linux) echo linux;; macOS) echo mac;; Windows) echo windows;; esac)
+          arch=$(case "$RUNNER_ARCH" in X64) echo x64;; ARM64) echo aarch64;; esac)
+          ext=$([ "$os" = windows ] && echo zip || echo tar.gz)
+          curl -fsSL -o "$RUNNER_TEMP/jdk.$ext" \
+            "https://api.adoptium.net/v3/binary/version/jdk-25.0.5%2B8/$os/$arch/jdk/hotspot/normal/eclipse"
+          echo "JDK_FILE=$RUNNER_TEMP/jdk.$ext" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "25.0.5+8"
+          distribution: jdkfile
+          jdkFile: ${{ env.JDK_FILE }}
+          java-version: "25.0.5"
       # rustup reads rust-toolchain.toml and installs the pinned toolchain with rustfmt and clippy.
       - run: rustup show
       - run: cargo fmt --all --check
@@ -30,9 +42,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The exact Temurin build the book's numbers come from. setup-java's version matching
+      # can't resolve a build number on every runner, so download it from Adoptium.
+      - name: Download Temurin 25.0.5+8
+        shell: bash
+        run: |
+          os=$(case "$RUNNER_OS" in Linux) echo linux;; macOS) echo mac;; Windows) echo windows;; esac)
+          arch=$(case "$RUNNER_ARCH" in X64) echo x64;; ARM64) echo aarch64;; esac)
+          ext=$([ "$os" = windows ] && echo zip || echo tar.gz)
+          curl -fsSL -o "$RUNNER_TEMP/jdk.$ext" \
+            "https://api.adoptium.net/v3/binary/version/jdk-25.0.5%2B8/$os/$arch/jdk/hotspot/normal/eclipse"
+          echo "JDK_FILE=$RUNNER_TEMP/jdk.$ext" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "25.0.5+8"
+          distribution: jdkfile
+          jdkFile: ${{ env.JDK_FILE }}
+          java-version: "25.0.5"
       - run: rustup show
       - run: cargo test --workspace --no-fail-fast
