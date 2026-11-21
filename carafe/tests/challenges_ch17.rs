@@ -67,12 +67,15 @@ fn bootstraps_in_java_base() {
     let counts = bootstrap_census(&java_base).unwrap();
     let counts: Vec<(&str, usize)> =
         counts.iter().map(|(k, &v)| (k.as_str(), v)).collect();
+    // java.base's platform-specific classes differ between Linux and macOS.
+    let (lambdas, records) =
+        if cfg!(target_os = "linux") { (1563, 515) } else { (1546, 518) };
     assert_eq!(
         counts,
         [
             ("java/lang/invoke/LambdaMetafactory.altMetafactory", 15),
-            ("java/lang/invoke/LambdaMetafactory.metafactory", 1546),
-            ("java/lang/runtime/ObjectMethods.bootstrap", 518),
+            ("java/lang/invoke/LambdaMetafactory.metafactory", lambdas),
+            ("java/lang/runtime/ObjectMethods.bootstrap", records),
             ("java/lang/runtime/SwitchBootstraps.typeSwitch", 64),
         ]
     );

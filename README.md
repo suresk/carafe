@@ -50,6 +50,8 @@ has one commit per chapter, but the book is printed from the latest code: check 
 
 ## What you need
 
+- macOS or Linux. On Windows, use WSL: carafe always ends a line with `\n`, while HotSpot
+  on Windows writes `\r\n`, so the tests that compare the two fail there.
 - Rust 1.99 or later (`rust-toolchain.toml` pins it).
 - **Eclipse Temurin 25.0.5+8, exactly.** The tests compile the Java programs in
   `carafe/java/` with its `javac`, and the counts the book quotes are true of that release.

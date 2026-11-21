@@ -53,7 +53,9 @@ fn the_cost_of_a_stream() {
     };
     assert_eq!(stream(&pipelines), 101);
     assert!(pipelines.loaded.len() > 300);
-    assert_eq!(pipelines.executed - hello.executed, 118_758);
+    // A few of java.base's classes differ between operating systems.
+    let cost = if cfg!(target_os = "linux") { 118_796 } else { 118_758 };
+    assert_eq!(pipelines.executed - hello.executed, cost);
     let new: Vec<&String> = pipelines.natives.difference(&hello.natives).collect();
     assert_eq!(new.len(), 32);
     // @end

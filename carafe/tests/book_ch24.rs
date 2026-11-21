@@ -59,6 +59,8 @@ fn the_scoreboard() {
         .iter()
         .map(|s| (s.program.as_str(), s.same, s.classes, s.natives.len()))
         .collect();
+    // java.base's platform-specific classes make this 251 on Linux.
+    let format = if cfg!(target_os = "linux") { 251 } else { 252 };
     assert_eq!(
         table,
         [
@@ -67,7 +69,7 @@ fn the_scoreboard() {
             ("Enums", true, 129, 27),
             ("Exceptions", true, 91, 15),
             ("Factories", true, 91, 18),
-            ("Format", false, 252, 42),
+            ("Format", false, format, 42),
             ("Hello", true, 31, 5),
             ("HelpfulNpe", true, 49, 8),
             ("Modest", true, 108, 17),
